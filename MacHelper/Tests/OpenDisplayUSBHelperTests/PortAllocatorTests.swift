@@ -26,6 +26,17 @@ final class PortAllocatorTests: XCTestCase {
         XCTAssertEqual(next, 9011)
     }
 
+    func testExistingForwardOwnedBySameDeviceCountsAsFree() {
+        XCTAssertTrue(PortAllocator.isAvailable(9000, bindFree: false, reusableBySameDevice: true))
+        XCTAssertTrue(PortAllocator.isAvailable(9000, bindFree: true, reusableBySameDevice: false))
+        XCTAssertFalse(PortAllocator.isAvailable(9000, bindFree: false, reusableBySameDevice: false))
+
+        let port = PortAllocator.propose(used: []) { candidate in
+            PortAllocator.isAvailable(candidate, bindFree: false, reusableBySameDevice: candidate == 9000)
+        }
+        XCTAssertEqual(port, 9000)
+    }
+
     func testReturnsNilWhenRangeExhausted() {
         var used = Set<UInt16>([9000])
         for port in PortAllocator.fallbackStart...PortAllocator.fallbackEnd {

@@ -23,6 +23,7 @@ final class HelperEngine: @unchecked Sendable {
         writeOpenDisplayDefaults: false
     )
     private var adbPath: String?
+    private var adbClient: AdbClient?
     private var adbVersion: String?
     private var statusText = "Starting…"
     private var lastError: String?
@@ -96,6 +97,7 @@ final class HelperEngine: @unchecked Sendable {
         parser = TrackDevicesParser()
         guard let path = AdbLocator.locate(override: settings.adbPathOverride) else {
             adbPath = nil
+            adbClient = nil
             adbVersion = nil
             statusText = "adb not found"
             lastError = "Install android-platform-tools or set the adb path in Settings"
@@ -104,6 +106,7 @@ final class HelperEngine: @unchecked Sendable {
             return
         }
         adbPath = path
+        adbClient = nil
         statusText = "starting adb…"
         publish()
         io.async { [weak self] in
@@ -112,6 +115,7 @@ final class HelperEngine: @unchecked Sendable {
             _ = client.startServer()
             let version = client.version()
             self.queue.async {
+                self.adbClient = client
                 switch version {
                 case .success(let text):
                     self.adbVersion = text
@@ -215,19 +219,34 @@ final class HelperEngine: @unchecked Sendable {
         slot.busy = true
         let device = slot.lastAdb ?? TrackedDevice(serial: slot.serial, state: "device")
         let settings = self.settings
-        let used = currentUsedPorts(except: slot.serial)
-        let reserved = PortAllocator.propose(used: used, isFree: PortAllocator.isLoopbackPortFree)
-        slot.reservedPort = reserved
         let path = adbPath
         let helperVersion = self.helperVersion
         io.async { [weak self] in
             guard let self else { return }
+            let client = self.queue.sync { self.cachedClient(path: path) }
+            let reusable = ForwardListParser.reusableLocalPorts(
+                serial: slot.serial,
+                in: client?.listForwards(serial: slot.serial) ?? []
+            )
+            let plan: (used: Set<UInt16>, reserved: UInt16?) = self.queue.sync {
+                guard slot.generation == generation, self.started else { return ([], nil) }
+                let used = self.currentUsedPorts(except: slot.serial)
+                let reserved = PortAllocator.propose(used: used) { candidate in
+                    PortAllocator.isAvailable(
+                        candidate,
+                        bindFree: PortAllocator.isLoopbackPortFree(candidate),
+                        reusableBySameDevice: reusable.contains(candidate)
+                    )
+                }
+                slot.reservedPort = reserved
+                return (used, reserved)
+            }
             let tunnel = self.makeTunnel(
                 device: device,
                 settings: settings,
-                used: used,
-                reservedPort: reserved,
-                adbPath: path,
+                used: plan.used,
+                reservedPort: plan.reserved,
+                client: client,
                 helperVersion: helperVersion,
                 slot: slot,
                 generation: generation
@@ -258,12 +277,11 @@ final class HelperEngine: @unchecked Sendable {
         settings: SettingsSnapshot,
         used: Set<UInt16>,
         reservedPort: UInt16?,
-        adbPath: String?,
+        client: AdbClient?,
         helperVersion: String,
         slot: DeviceSlot,
         generation: Int
     ) -> DeviceTunnel {
-        let client = adbPath.map { AdbClient(executable: $0, log: { [weak self] in self?.log.info($0) }) }
         var hooks = TunnelHooks()
         hooks.isReceiverInstalled = { serial in
             client?.isReceiverInstalled(serial: serial) ?? false
@@ -282,16 +300,36 @@ final class HelperEngine: @unchecked Sendable {
             if let reservedPort, !taken.contains(reservedPort) {
                 return reservedPort
             }
-            return PortAllocator.propose(used: taken, isFree: PortAllocator.isLoopbackPortFree)
+            let reusable = ForwardListParser.reusableLocalPorts(
+                serial: device.serial,
+                in: client?.listForwards(serial: device.serial) ?? []
+            )
+            return PortAllocator.propose(used: taken) { candidate in
+                PortAllocator.isAvailable(
+                    candidate,
+                    bindFree: PortAllocator.isLoopbackPortFree(candidate),
+                    reusableBySameDevice: reusable.contains(candidate)
+                )
+            }
         }
         hooks.nextPort = { port, extraUsed in
-            PortAllocator.next(after: port, used: used.union(extraUsed), isFree: PortAllocator.isLoopbackPortFree)
+            let reusable = ForwardListParser.reusableLocalPorts(
+                serial: device.serial,
+                in: client?.listForwards(serial: device.serial) ?? []
+            )
+            return PortAllocator.next(after: port, used: used.union(extraUsed)) { candidate in
+                PortAllocator.isAvailable(
+                    candidate,
+                    bindFree: PortAllocator.isLoopbackPortFree(candidate),
+                    reusableBySameDevice: reusable.contains(candidate)
+                )
+            }
         }
         hooks.forward = { serial, port in
             client?.forward(serial: serial, localPort: port) ?? .failed("adb missing")
         }
-        hooks.removeForward = { port in
-            client?.removeForward(localPort: port)
+        hooks.removeForward = { serial, port in
+            client?.removeForward(serial: serial, localPort: port)
         }
         hooks.probe = { port in
             try HelloProbe.probe(port: port)
@@ -356,11 +394,10 @@ final class HelperEngine: @unchecked Sendable {
         slot.proxy?.withdraw()
         slot.proxy = nil
         if let port = slot.tunnel?.state.tunnelPort {
-            let path = adbPath
+            let client = cachedClient(path: adbPath)
+            let deviceSerial = slot.serial
             io.async {
-                if let path {
-                    AdbClient(executable: path).removeForward(localPort: port)
-                }
+                client?.removeForward(serial: deviceSerial, localPort: port)
             }
         }
         if slot.tunnel?.state.wroteDefaults == true {
@@ -381,9 +418,11 @@ final class HelperEngine: @unchecked Sendable {
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now(), repeating: HelperConstants.heartbeatInterval)
         timer.setEventHandler { [weak self, weak slot] in
-            guard let self, let slot, slot.generation == generation, let path = self.adbPath else { return }
+            guard let self, let slot, slot.generation == generation else { return }
+            let client = self.cachedClient(path: self.adbPath)
             self.io.async {
-                let result = AdbClient(executable: path).sendHeartbeat(
+                guard let client else { return }
+                let result = client.sendHeartbeat(
                     serial: serial,
                     port: port,
                     helperVersion: self.helperVersion
@@ -414,13 +453,26 @@ final class HelperEngine: @unchecked Sendable {
 
     private func reconcile() {
         for slot in slots.values {
-            guard let device = slot.lastAdb, device.isAuthorizedReady else { continue }
+            let device = slot.lastAdb
             let phase = slot.tunnel?.state.phase
-            if phase == .receiverMissing || phase == .failed, !slot.busy {
-                log.info("retrying \(slot.serial) (\(phase?.rawValue ?? "nil"))")
-                startAttach(slot)
-            }
+            guard ReconcilePolicy.shouldRetry(
+                phase: phase,
+                busy: slot.busy,
+                authorized: device?.isAuthorizedReady == true
+            ) else { continue }
+            log.info("retrying \(slot.serial) (\(phase?.rawValue ?? "nil"))")
+            startAttach(slot)
         }
+    }
+
+    private func cachedClient(path: String?) -> AdbClient? {
+        if let adbClient, adbPath == path { return adbClient }
+        guard let path else { return nil }
+        let client = AdbClient(executable: path, log: { [weak self] in self?.log.info($0) })
+        if adbPath == path {
+            adbClient = client
+        }
+        return client
     }
 
     private func currentUsedPorts(except serial: String) -> Set<UInt16> {

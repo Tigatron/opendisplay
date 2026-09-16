@@ -36,6 +36,12 @@ enum PortAllocator {
         return nil
     }
 
+    /// An adb listener we already own for this serial counts as free: bind would
+    /// fail, but `--no-rebind` is the wrong diagnosis — reuse the forward.
+    static func isAvailable(_ port: UInt16, bindFree: Bool, reusableBySameDevice: Bool) -> Bool {
+        reusableBySameDevice || bindFree
+    }
+
     /// Bind 127.0.0.1:port (no SO_REUSEADDR). Success means nothing is listening.
     static func isLoopbackPortFree(_ port: UInt16) -> Bool {
         let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)

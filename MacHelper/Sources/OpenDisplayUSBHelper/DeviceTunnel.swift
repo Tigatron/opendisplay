@@ -45,7 +45,7 @@ struct TunnelHooks {
     var proposePort: (Set<UInt16>) -> UInt16? = { _ in nil }
     var nextPort: (UInt16, Set<UInt16>) -> UInt16? = { _, _ in nil }
     var forward: (String, UInt16) -> ForwardOutcome = { _, _ in .failed("unset") }
-    var removeForward: (UInt16) -> Void = { _ in }
+    var removeForward: (String, UInt16) -> Void = { _, _ in }
     var probe: (UInt16) throws -> HelloMessage = { _ in throw HelloFrameError.timeout }
     var publish: (BonjourProxy.Request) -> Result<String, Error> = { _ in
         .failure(NSError(domain: "Bonjour", code: -1))
@@ -192,7 +192,7 @@ final class DeviceTunnel {
         hooks.stopHeartbeat()
         hooks.withdraw()
         if let port = state.tunnelPort {
-            hooks.removeForward(port)
+            hooks.removeForward(state.serial, port)
         }
         if state.wroteDefaults {
             hooks.revertDefaults()
@@ -220,7 +220,7 @@ final class DeviceTunnel {
             hello = try hooks.probe(port)
         } catch {
             fail("hello probe: \(error.localizedDescription)")
-            hooks.removeForward(port)
+            hooks.removeForward(state.serial, port)
             state.tunnelPort = nil
             return state
         }
@@ -265,7 +265,7 @@ final class DeviceTunnel {
             }
         case .failure(let error):
             fail("Bonjour: \(error.localizedDescription)")
-            hooks.removeForward(port)
+            hooks.removeForward(state.serial, port)
             state.tunnelPort = nil
         }
         if shouldAbort() {
@@ -278,7 +278,7 @@ final class DeviceTunnel {
         hooks.stopHeartbeat()
         hooks.withdraw()
         if let port = state.tunnelPort {
-            hooks.removeForward(port)
+            hooks.removeForward(state.serial, port)
         }
         if state.wroteDefaults {
             hooks.revertDefaults()

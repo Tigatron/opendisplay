@@ -48,7 +48,7 @@ final class DeviceTunnelTests: XCTestCase {
         XCTAssertNil(detached.bonjourName)
         XCTAssertFalse(detached.heartbeatOn)
         XCTAssertTrue(log.events.contains("withdraw"))
-        XCTAssertTrue(log.events.contains("remove 9000"))
+        XCTAssertTrue(log.events.contains("remove R52T30ABC:9000"))
         XCTAssertTrue(log.events.contains("heartbeat off"))
         XCTAssertFalse(log.events.contains("revert defaults"))
     }
@@ -115,7 +115,7 @@ final class DeviceTunnelTests: XCTestCase {
         XCTAssertEqual(state.phase, .unauthorized)
         XCTAssertNil(state.tunnelPort)
         XCTAssertTrue(log.events.contains("withdraw"))
-        XCTAssertTrue(log.events.contains("remove 9000"))
+        XCTAssertTrue(log.events.contains("remove R52T30ABC:9000"))
     }
 
     func testAbortDuringAttachWithdraws() {
@@ -168,8 +168,8 @@ final class DeviceTunnelTests: XCTestCase {
             log.events.append("forward \(serial):\(local)")
             return .ok
         }
-        hooks.removeForward = { local in
-            log.events.append("remove \(local)")
+        hooks.removeForward = { serial, local in
+            log.events.append("remove \(serial):\(local)")
         }
         hooks.probe = { local in
             log.events.append("probe \(local)")

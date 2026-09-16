@@ -80,7 +80,24 @@ struct AdbClient {
         return model.isEmpty ? nil : model
     }
 
+    func listForwards(serial: String) -> [AdbForward] {
+        let result = runner.run(
+            arguments: ["-s", serial, "forward", "--list"],
+            timeout: HelperConstants.adbTimeout
+        )
+        return ForwardListParser.parse(result.stdout).filter { $0.serial == serial }
+    }
+
     func forward(serial: String, localPort: UInt16) -> ForwardOutcome {
+        let existing = listForwards(serial: serial)
+        if ForwardListParser.existing(serial: serial, localPort: localPort, in: existing) != nil {
+            log("reusing existing forward \(serial) tcp:\(localPort) tcp:9000")
+            return .ok
+        }
+        for stale in ForwardListParser.staleLocals(serial: serial, keeping: localPort, in: existing) {
+            log("removing stale forward \(serial) tcp:\(stale)")
+            removeForward(serial: serial, localPort: stale)
+        }
         let result = runner.run(
             arguments: ["-s", serial, "forward", "--no-rebind", "tcp:\(localPort)", "tcp:9000"],
             timeout: HelperConstants.adbTimeout
@@ -96,9 +113,9 @@ struct AdbClient {
         return .failed(describe("forward tcp:\(localPort)", result))
     }
 
-    func removeForward(localPort: UInt16) {
+    func removeForward(serial: String, localPort: UInt16) {
         _ = runner.run(
-            arguments: ["forward", "--remove", "tcp:\(localPort)"],
+            arguments: ["-s", serial, "forward", "--remove", "tcp:\(localPort)"],
             timeout: HelperConstants.adbTimeout
         )
     }

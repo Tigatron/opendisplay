@@ -25,7 +25,7 @@ final class OpenDisplayDefaultsTests: XCTestCase {
     }
 
     func testDeleteCallsLogHookWithTrigger() {
-        let cases: [OpenDisplayDefaultsTrigger] = [.tunnelDown, .settingDisabled, .quit]
+        let cases: [OpenDisplayDefaultsTrigger] = [.tunnelDown, .settingDisabled, .quit, .reconcile]
         for trigger in cases {
             var lines: [String] = []
             OpenDisplayDefaults.revertTunnel(
@@ -70,5 +70,59 @@ final class SettingsChangeLogTests: XCTestCase {
             writeOpenDisplayDefaults: true
         )
         XCTAssertTrue(SettingsChangeLog.lines(from: snap, to: snap).isEmpty)
+    }
+}
+
+final class StaleDefaultsPolicyTests: XCTestCase {
+    func testOffLeavesUserKeysAndHints() {
+        XCTAssertEqual(
+            StaleDefaultsPolicy.action(
+                writeOpenDisplayDefaults: false,
+                keysPresent: true,
+                hasReady9000: false
+            ),
+            .ignoreWithHint
+        )
+        XCTAssertTrue(StaleDefaultsPolicy.hint.contains("writeOpenDisplayDefaults=off"))
+    }
+
+    func testOnDeletesWhenNo9000Tunnel() {
+        XCTAssertEqual(
+            StaleDefaultsPolicy.action(
+                writeOpenDisplayDefaults: true,
+                keysPresent: true,
+                hasReady9000: false
+            ),
+            .delete
+        )
+    }
+
+    func testOnKeepsKeysWhile9000Ready() {
+        XCTAssertEqual(
+            StaleDefaultsPolicy.action(
+                writeOpenDisplayDefaults: true,
+                keysPresent: true,
+                hasReady9000: true
+            ),
+            .none
+        )
+    }
+
+    func testAbsentKeysAreNone() {
+        XCTAssertEqual(
+            StaleDefaultsPolicy.action(
+                writeOpenDisplayDefaults: true,
+                keysPresent: false,
+                hasReady9000: false
+            ),
+            .none
+        )
+    }
+
+    func testHasTunnelKeysUsesInjectedReader() {
+        XCTAssertTrue(OpenDisplayDefaults.hasTunnelKeys { key in
+            key == "host" ? "127.0.0.1" : nil
+        })
+        XCTAssertFalse(OpenDisplayDefaults.hasTunnelKeys { _ in nil })
     }
 }

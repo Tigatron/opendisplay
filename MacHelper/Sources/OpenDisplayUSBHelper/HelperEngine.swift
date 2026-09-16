@@ -39,6 +39,7 @@ final class HelperEngine: @unchecked Sendable {
     private let errorThrottle = ErrorThrottle()
     private let localNetwork = LocalNetworkPrompt()
     private var localNetworkPermission: LocalNetworkPermission = .unknown
+    private var loggedStaleDefaultsHint = false
 
     init(
         log: HelperLogger = .shared,
@@ -99,6 +100,7 @@ final class HelperEngine: @unchecked Sendable {
             for slot in self.slots.values {
                 slot.tunnel?.applySettings(snapshot)
             }
+            self.reconcileOpenDisplayDefaults()
             self.publish()
         }
     }
@@ -291,6 +293,7 @@ final class HelperEngine: @unchecked Sendable {
                     self.errorThrottle.reset(key: slot.serial)
                     self.log.info(summary)
                 }
+                self.reconcileOpenDisplayDefaults()
                 self.publish()
             }
         }
@@ -409,6 +412,9 @@ final class HelperEngine: @unchecked Sendable {
         hooks.revertDefaults = { [weak self] trigger in
             OpenDisplayDefaults.revertTunnel(trigger: trigger, log: { self?.log.info($0) })
         }
+        hooks.note = { [weak self] message in
+            self?.log.info(message)
+        }
         return DeviceTunnel(
             device: device,
             settings: settings,
@@ -507,6 +513,7 @@ final class HelperEngine: @unchecked Sendable {
     }
 
     private func reconcile() {
+        reconcileOpenDisplayDefaults()
         for slot in slots.values {
             let device = slot.lastAdb
             let phase = slot.tunnel?.state.phase
@@ -528,6 +535,31 @@ final class HelperEngine: @unchecked Sendable {
             adbClient = client
         }
         return client
+    }
+
+    private func hasReadyPreferredTunnel() -> Bool {
+        slots.values.contains {
+            $0.tunnel?.state.phase == .ready
+                && $0.tunnel?.state.tunnelPort == HelperConstants.preferredTunnelPort
+        }
+    }
+
+    private func reconcileOpenDisplayDefaults() {
+        let present = OpenDisplayDefaults.hasTunnelKeys()
+        switch StaleDefaultsPolicy.action(
+            writeOpenDisplayDefaults: settings.writeOpenDisplayDefaults,
+            keysPresent: present,
+            hasReady9000: hasReadyPreferredTunnel()
+        ) {
+        case .none:
+            break
+        case .ignoreWithHint:
+            guard !loggedStaleDefaultsHint else { return }
+            loggedStaleDefaultsHint = true
+            log.info(StaleDefaultsPolicy.hint)
+        case .delete:
+            OpenDisplayDefaults.revertTunnel(trigger: .reconcile, log: { self.log.info($0) })
+        }
     }
 
     private func currentUsedPorts(except serial: String) -> Set<UInt16> {

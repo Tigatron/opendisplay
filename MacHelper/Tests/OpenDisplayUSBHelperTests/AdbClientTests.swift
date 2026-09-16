@@ -35,7 +35,7 @@ final class AdbClientTests: XCTestCase {
             )
         ])
         let client = AdbClient(runner: runner)
-        XCTAssertEqual(client.forward(serial: "R52", localPort: 9000), .portBusy)
+        XCTAssertEqual(client.forward(serial: "R52", localPort: 9000), .portBusy("cannot rebind existing socket"))
     }
 
     func testRemoveForwardAlwaysPassesSerial() {

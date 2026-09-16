@@ -55,6 +55,7 @@ struct TunnelHooks {
     var stopHeartbeat: () -> Void = {}
     var writeDefaults: (OpenDisplayDefaultsTrigger) -> Void = { _ in }
     var revertDefaults: (OpenDisplayDefaultsTrigger) -> Void = { _ in }
+    var note: (String) -> Void = { _ in }
 }
 
 /// Linear attach pipeline. All I/O is injected so unit tests never touch adb
@@ -162,13 +163,19 @@ final class DeviceTunnel {
             return state
         }
 
+        var preferredBusy: String?
+        let startedOnPreferred = port == HelperConstants.preferredTunnelPort
         while true {
             if aborted() { return state }
             switch hooks.forward(state.serial, port) {
             case .ok:
+                logPortChoice(port: port, startedOnPreferred: startedOnPreferred, preferredBusy: preferredBusy)
                 state.tunnelPort = port
                 return probeAndPublish(port: port, shouldAbort: shouldAbort)
-            case .portBusy:
+            case .portBusy(let message):
+                if port == HelperConstants.preferredTunnelPort {
+                    preferredBusy = message
+                }
                 tried.insert(port)
                 guard let next = hooks.nextPort(port, tried) else {
                     fail("could not bind a local forward port")
@@ -305,6 +312,18 @@ final class DeviceTunnel {
             teardown(keepRowPhase: Self.phase(forAdbState: state.adbState))
         }
         return state
+    }
+
+    private func logPortChoice(port: UInt16, startedOnPreferred: Bool, preferredBusy: String?) {
+        if let preferredBusy {
+            hooks.note("port \(port) (9000 busy: \(preferredBusy))")
+        } else if port == HelperConstants.preferredTunnelPort {
+            hooks.note("port \(port) (preferred)")
+        } else if startedOnPreferred {
+            hooks.note("port \(port) (preferred)")
+        } else {
+            hooks.note("port \(port) (9000 reserved by another device)")
+        }
     }
 
     private func fail(_ message: String) {

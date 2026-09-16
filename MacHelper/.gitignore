@@ -4,6 +4,9 @@ OpenDisplayUSBHelper.xcodeproj/
 # Release packaging (./build-release.sh)
 dist/
 
+# Isolated xcodebuild derived data (never overwrite dist/)
+build-h4/
+
 # Xcode user state
 xcuserdata/
 *.xcuserstate

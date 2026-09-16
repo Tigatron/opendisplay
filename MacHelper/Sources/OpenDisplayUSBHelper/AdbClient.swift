@@ -2,7 +2,7 @@ import Foundation
 
 enum ForwardOutcome: Equatable {
     case ok
-    case portBusy
+    case portBusy(String)
     case failed(String)
 }
 
@@ -103,12 +103,13 @@ struct AdbClient {
             timeout: HelperConstants.adbTimeout
         )
         if result.succeeded { return .ok }
-        let text = result.combinedOutput.lowercased()
-        if text.contains("already in use")
-            || text.contains("cannot bind")
-            || text.contains("address already")
-            || text.contains("rebind") {
-            return .portBusy
+        let text = result.combinedOutput
+        let lowered = text.lowercased()
+        if lowered.contains("already in use")
+            || lowered.contains("cannot bind")
+            || lowered.contains("address already")
+            || lowered.contains("rebind") {
+            return .portBusy(text.isEmpty ? "already in use" : text)
         }
         return .failed(describe("forward tcp:\(localPort)", result))
     }

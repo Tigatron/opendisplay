@@ -36,6 +36,7 @@ final class DeviceTunnelTests: XCTestCase {
             "check R52T30ABC",
             "launch R52T30ABC",
             "forward R52T30ABC:9000",
+            "port 9000 (preferred)",
             "probe 9000",
             "model R52T30ABC",
             "publish SM-X800 (USB) od-usb-r52t30abc.local. 9000 usb-R52T30ABC pv=3",
@@ -71,7 +72,7 @@ final class DeviceTunnelTests: XCTestCase {
             log.events.append("forward \(serial):\(port)")
             if port == 9000, busyOnce {
                 busyOnce = false
-                return .portBusy
+                return .portBusy("cannot bind")
             }
             return .ok
         }
@@ -86,6 +87,14 @@ final class DeviceTunnelTests: XCTestCase {
         XCTAssertEqual(state.tunnelPort, 9010)
         XCTAssertFalse(state.heartbeatOn)
         XCTAssertFalse(log.events.contains(where: { $0.hasPrefix("heartbeat on") }))
+        XCTAssertTrue(log.events.contains("port 9010 (9000 busy: cannot bind)"))
+    }
+
+    func testLogsPreferredPortReason() {
+        let log = HookLog()
+        let tunnel = makeTunnel(log: log, port: 9000)
+        _ = tunnel.attach()
+        XCTAssertTrue(log.events.contains("port 9000 (preferred)"))
     }
 
     func testAutoConnectWritesAndRevertsDefaultsOn9000() {
@@ -235,6 +244,7 @@ final class DeviceTunnelTests: XCTestCase {
         hooks.stopHeartbeat = { log.events.append("heartbeat off") }
         hooks.writeDefaults = { _ in log.events.append("write defaults") }
         hooks.revertDefaults = { _ in log.events.append("revert defaults") }
+        hooks.note = { log.events.append($0) }
         tunnel.hooks = hooks
         return tunnel
     }

@@ -6,10 +6,11 @@ enum PortAllocator {
     static let fallbackStart = HelperConstants.fallbackPortStart
     static let fallbackEnd = HelperConstants.fallbackPortEnd
 
-    /// First device gets 9000 when that loopback port is free and unused.
-    /// Everyone else (or a busy 9000) walks 9010...9100.
+    /// Try 9000 first whenever another device in this helper has not reserved
+    /// it. adb's `--no-rebind` is the source of truth for "busy"; the bind
+    /// pre-check is only a fast path when picking among 9010...9100.
     static func propose(used: Set<UInt16>, isFree: (UInt16) -> Bool) -> UInt16? {
-        if !used.contains(preferred), isFree(preferred) {
+        if !used.contains(preferred) {
             return preferred
         }
         for port in fallbackStart...fallbackEnd where !used.contains(port) && isFree(port) {
@@ -42,11 +43,21 @@ enum PortAllocator {
         reusableBySameDevice || bindFree
     }
 
-    /// Bind 127.0.0.1:port (no SO_REUSEADDR). Success means nothing is listening.
+    /// Bind 127.0.0.1:port with `SO_REUSEADDR` (not `SO_REUSEPORT`). ESTABLISHED
+    /// leftovers from a closed listener do not make this return false; only a
+    /// real LISTENING socket should.
     static func isLoopbackPortFree(_ port: UInt16) -> Bool {
         let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
         guard fd >= 0 else { return false }
         defer { close(fd) }
+        var reuse: Int32 = 1
+        _ = setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &reuse,
+            socklen_t(MemoryLayout<Int32>.size)
+        )
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)

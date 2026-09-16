@@ -4,6 +4,7 @@ object WireProtocol {
     const val VERSION = 3
     const val MIN_SUPPORTED_PEER = 1
     const val ASSUMED_WHEN_ABSENT = 1
+    const val PENCIL_WIRE_VERSION = 3
     const val DEFAULT_PORT = 9000
     const val SERVICE_TYPE = "_opensidecar._tcp."
     const val DEFAULT_SERVICE_NAME = "BUILD.TERRYNAMIC"
@@ -33,4 +34,6 @@ object WireMessage {
     const val CURSOR = "cursor"
     const val CURSOR_IMG = "cursorImg"
     const val CURSOR_ACK = "cursorAck"
+    const val PENCIL = "pencil"
+    const val PROXIMITY = "proximity"
 }

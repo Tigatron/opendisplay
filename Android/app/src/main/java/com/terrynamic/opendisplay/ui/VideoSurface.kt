@@ -15,6 +15,7 @@ import android.view.View
 import android.widget.FrameLayout
 import com.terrynamic.opendisplay.CursorUi
 import com.terrynamic.opendisplay.ReceiverController
+import com.terrynamic.opendisplay.input.PencilMapper
 import kotlin.math.ceil
 import kotlin.math.floor
 
@@ -54,6 +55,7 @@ class VideoSurface(context: Context) : FrameLayout(context), SurfaceHolder.Callb
     init {
         setBackgroundColor(Color.BLACK)
         isClickable = true
+        setOnHoverListener { _, event -> handleHover(event) }
     }
 
     fun updateCursor(cursor: CursorUi) {
@@ -93,7 +95,7 @@ class VideoSurface(context: Context) : FrameLayout(context), SurfaceHolder.Callb
                 normalize(event.x, event.y)?.let { (x, y) ->
                     lastX = x
                     lastY = y
-                    receiver.sendTouch("began", x, y)
+                    dispatchContact(receiver, event, 0, PencilMapper.ContactAction.Down, x, y)
                 }
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
@@ -126,7 +128,7 @@ class VideoSurface(context: Context) : FrameLayout(context), SurfaceHolder.Callb
                     normalize(event.getX(index), event.getY(index))?.let { (x, y) ->
                         lastX = x
                         lastY = y
-                        receiver.sendTouch("moved", x, y)
+                        dispatchContact(receiver, event, index, PencilMapper.ContactAction.Move, x, y)
                     }
                 }
             }
@@ -134,19 +136,91 @@ class VideoSurface(context: Context) : FrameLayout(context), SurfaceHolder.Callb
                 if (!twoFinger) {
                     val index = event.findPointerIndex(primaryId).takeIf { it >= 0 } ?: 0
                     normalize(event.getX(index), event.getY(index))?.let { (x, y) ->
-                        receiver.sendTouch("ended", x, y)
-                    } ?: receiver.sendTouch("ended", lastX, lastY)
+                        dispatchContact(receiver, event, index, PencilMapper.ContactAction.Up, x, y)
+                    } ?: dispatchContact(receiver, event, 0, PencilMapper.ContactAction.Up, lastX, lastY)
                 }
                 twoFinger = false
                 primaryId = MotionEvent.INVALID_POINTER_ID
             }
             MotionEvent.ACTION_CANCEL -> {
-                if (!twoFinger) receiver.sendTouch("cancelled", lastX, lastY)
+                if (!twoFinger) {
+                    dispatchContact(receiver, event, 0, PencilMapper.ContactAction.Cancel, lastX, lastY)
+                }
                 twoFinger = false
                 primaryId = MotionEvent.INVALID_POINTER_ID
             }
         }
         return true
+    }
+
+    private fun handleHover(event: MotionEvent): Boolean {
+        val receiver = controller ?: return false
+        val action = when (event.actionMasked) {
+            MotionEvent.ACTION_HOVER_ENTER -> PencilMapper.HoverAction.Enter
+            MotionEvent.ACTION_HOVER_MOVE -> PencilMapper.HoverAction.Move
+            MotionEvent.ACTION_HOVER_EXIT -> PencilMapper.HoverAction.Exit
+            else -> return false
+        }
+        val index = 0
+        val pos = normalize(event.getX(index), event.getY(index)) ?: return true
+        lastX = pos.first
+        lastY = pos.second
+        val routed = PencilMapper.routeHover(
+            senderPv = if (receiver.senderSupportsPencil()) 3 else 1,
+            stylus = PencilMapper.isStylusTool(event.getToolType(index)),
+            action = action,
+            x = pos.first,
+            y = pos.second,
+            orientationRad = event.getAxisValue(MotionEvent.AXIS_ORIENTATION, index).toDouble(),
+            tiltRad = event.getAxisValue(MotionEvent.AXIS_TILT, index).toDouble(),
+        ) ?: return true
+        dispatchRouted(receiver, routed)
+        return true
+    }
+
+    private fun dispatchContact(
+        receiver: ReceiverController,
+        event: MotionEvent,
+        index: Int,
+        action: PencilMapper.ContactAction,
+        x: Double,
+        y: Double,
+    ) {
+        val pointer = index.coerceIn(0, (event.pointerCount - 1).coerceAtLeast(0))
+        val routed = PencilMapper.routeContact(
+            senderPv = if (receiver.senderSupportsPencil()) 3 else 1,
+            stylus = event.pointerCount > 0 && PencilMapper.isStylusTool(event.getToolType(pointer)),
+            action = action,
+            x = x,
+            y = y,
+            pressure = if (event.pointerCount > 0) event.getPressure(pointer) else 0f,
+            orientationRad = if (event.pointerCount > 0) {
+                event.getAxisValue(MotionEvent.AXIS_ORIENTATION, pointer).toDouble()
+            } else {
+                0.0
+            },
+            tiltRad = if (event.pointerCount > 0) {
+                event.getAxisValue(MotionEvent.AXIS_TILT, pointer).toDouble()
+            } else {
+                0.0
+            },
+        )
+        dispatchRouted(receiver, routed)
+    }
+
+    private fun dispatchRouted(receiver: ReceiverController, routed: PencilMapper.Routed) {
+        when (routed) {
+            is PencilMapper.Routed.Touch -> receiver.sendTouch(routed.phase, routed.x, routed.y)
+            is PencilMapper.Routed.Pencil -> receiver.sendPencil(
+                routed.phase,
+                routed.x,
+                routed.y,
+                routed.pressure,
+                routed.azimuth,
+                routed.altitude,
+            )
+            is PencilMapper.Routed.Proximity -> receiver.sendProximity(routed.entering, routed.x, routed.y)
+        }
     }
 
     private fun midX(event: MotionEvent) =

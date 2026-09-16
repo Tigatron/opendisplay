@@ -17,6 +17,9 @@ enum class OutboundKind {
     SLEEPING,
     CLOSING,
     CURSOR_ACK,
+    PENCIL,
+    PENCIL_MOVE,
+    PROXIMITY,
 }
 
 data class OutboundMessage(
@@ -25,8 +28,9 @@ data class OutboundMessage(
 )
 
 /**
- * Bounded outbound queue. Coalesces `touch moved`, `scroll`, and `ping`
- * so a burst of input does not pile up behind video-sized writes.
+ * Bounded outbound queue. Coalesces `touch moved`, pencil move/hover,
+ * `scroll`, and `ping` so a burst of input does not pile up behind
+ * video-sized writes.
  */
 class OutboundQueue(
     private val capacity: Int = 64,
@@ -68,6 +72,7 @@ class OutboundQueue(
 
     private fun isCoalescible(kind: OutboundKind): Boolean {
         return kind == OutboundKind.TOUCH_MOVED ||
+            kind == OutboundKind.PENCIL_MOVE ||
             kind == OutboundKind.SCROLL ||
             kind == OutboundKind.PING
     }

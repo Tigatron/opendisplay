@@ -9,6 +9,7 @@ import android.util.Log
 import android.view.Surface
 import com.terrynamic.opendisplay.link.LinkPolicy
 import com.terrynamic.opendisplay.cursor.CursorChannel
+import com.terrynamic.opendisplay.input.PencilMapper
 import com.terrynamic.opendisplay.cursor.CursorUdpSocket
 import com.terrynamic.opendisplay.protocol.ClockOffset
 import com.terrynamic.opendisplay.protocol.ControlMessages
@@ -99,6 +100,8 @@ class ReceiverController(private val app: Application) {
     private var listeningEnabled = false
     private var asleep = false
     private var stopped = false
+    @Volatile
+    private var senderPv = WireProtocol.ASSUMED_WHEN_ABSENT
 
     private val _state = MutableStateFlow(
         UiState(
@@ -219,6 +222,28 @@ class ReceiverController(private val app: Application) {
 
     fun sendScroll(dx: Double, dy: Double) {
         listener?.sendControl(OutboundKind.SCROLL, ControlMessages.scroll(dx, dy))
+    }
+
+    fun senderSupportsPencil(): Boolean = PencilMapper.supportsPencil(senderPv)
+
+    fun sendPencil(
+        phase: String,
+        x: Double,
+        y: Double,
+        pressure: Double,
+        azimuth: Double,
+        altitude: Double,
+    ) {
+        val t = clock.stampSenderClock(System.currentTimeMillis().toDouble())
+        val kind = if (phase == "move" || phase == "hover") OutboundKind.PENCIL_MOVE else OutboundKind.PENCIL
+        listener?.sendControl(
+            kind,
+            ControlMessages.pencil(phase, x, y, pressure, azimuth, altitude, macClockMs = t),
+        )
+    }
+
+    fun sendProximity(entering: Boolean, x: Double, y: Double) {
+        listener?.sendControl(OutboundKind.PROXIMITY, ControlMessages.proximity(entering, x, y))
     }
 
     fun updateSettings(settings: AppSettings) {
@@ -393,6 +418,7 @@ class ReceiverController(private val app: Application) {
 
     private fun adoptSession(connection: FramedConnection, generation: Long, transport: String) {
         sessionGeneration = generation
+        senderPv = WireProtocol.ASSUMED_WHEN_ABSENT
         cursorChannel.resetSession()
         clock.reset()
         latency.reset()
@@ -459,6 +485,7 @@ class ReceiverController(private val app: Application) {
             }
             WireMessage.WELCOME -> {
                 val welcome = InboundControl.welcome(obj) ?: return
+                senderPv = welcome.pv
                 if (welcome.pv < WireProtocol.MIN_SUPPORTED_PEER) {
                     _state.update {
                         it.copy(

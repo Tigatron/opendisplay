@@ -54,6 +54,36 @@ object ControlMessages {
         .put("dx", dx)
         .put("dy", dy)
 
+    fun pencil(
+        phase: String,
+        x: Double,
+        y: Double,
+        pressure: Double,
+        azimuth: Double,
+        altitude: Double,
+        rotation: Double = 0.0,
+        macClockMs: Double? = null,
+    ): JSONObject = JSONObject()
+        .put("type", WireMessage.PENCIL)
+        .put("phase", phase)
+        .put("x", x)
+        .put("y", y)
+        .put("pressure", pressure)
+        .put("azimuth", azimuth)
+        .put("altitude", altitude)
+        .put("rotation", rotation)
+        .also { if (macClockMs != null) it.put("t", macClockMs) }
+
+    fun proximity(
+        entering: Boolean,
+        x: Double,
+        y: Double,
+    ): JSONObject = JSONObject()
+        .put("type", WireMessage.PROXIMITY)
+        .put("entering", entering)
+        .put("x", x)
+        .put("y", y)
+
     fun ping(tMs: Double): JSONObject = JSONObject()
         .put("type", WireMessage.PING)
         .put("t", tMs)

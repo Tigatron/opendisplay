@@ -155,7 +155,7 @@ final class HelperEngine: @unchecked Sendable {
         }
     }
 
-    private func handleTrackerChunk(_ chunk: String) {
+    private func handleTrackerChunk(_ chunk: Data) {
         let snapshots = parser.ingest(chunk)
         for devices in snapshots {
             apply(devices)

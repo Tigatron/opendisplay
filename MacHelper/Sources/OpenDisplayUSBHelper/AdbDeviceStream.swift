@@ -2,6 +2,10 @@ import Foundation
 
 /// Long-lived `adb track-devices -l`. The process is owned here; the engine
 /// reconnects with backoff when it exits. Never kill-server.
+///
+/// Chunks are raw `Data`. adb writes smart-socket frames (`[4 hex][payload]`)
+/// that must not be decoded one `availableData` at a time — a UTF-8 split
+/// would drop the tail of a frame.
 final class AdbDeviceStream {
     private var process: Process?
     private var stdout: FileHandle?
@@ -10,7 +14,7 @@ final class AdbDeviceStream {
 
     func start(
         executable: String,
-        onChunk: @escaping (String) -> Void,
+        onChunk: @escaping (Data) -> Void,
         onEnd: @escaping (Int32) -> Void
     ) throws {
         stop()
@@ -26,9 +30,7 @@ final class AdbDeviceStream {
         handle.readabilityHandler = { file in
             let data = file.availableData
             if data.isEmpty { return }
-            if let text = String(data: data, encoding: .utf8) {
-                onChunk(text)
-            }
+            onChunk(data)
         }
         process.terminationHandler = { finished in
             handle.readabilityHandler = nil

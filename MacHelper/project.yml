@@ -1,0 +1,72 @@
+name: OpenDisplayUSBHelper
+options:
+  createIntermediateGroups: true
+  defaultConfig: Debug
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGNING_ALLOWED: "YES"
+    ENABLE_HARDENED_RUNTIME: "NO"
+schemes:
+  OpenDisplayUSBHelper:
+    build:
+      targets:
+        OpenDisplayUSBHelper: all
+        OpenDisplayUSBHelperTests: [test]
+    test:
+      targets:
+        - OpenDisplayUSBHelperTests
+targets:
+  OpenDisplayUSBHelper:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources/OpenDisplayUSBHelper
+    info:
+      path: Info.plist
+      properties:
+        LSUIElement: true
+        NSPrincipalClass: NSApplication
+        CFBundleDisplayName: OpenDisplay USB Helper
+        CFBundleName: OpenDisplayUSBHelper
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSHumanReadableCopyright: "Copyright © 2026 Terrynamic"
+        LSApplicationCategoryType: public.app-category.utilities
+        NSBonjourServices:
+          - "_opensidecar._tcp"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: build.terrynamic.opendisplay.usbhelper
+        PRODUCT_NAME: OpenDisplay USB Helper
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
+        SWIFT_STRICT_CONCURRENCY: targeted
+        COMBINE_HIDPI_IMAGES: "YES"
+  OpenDisplayUSBHelperTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests/OpenDisplayUSBHelperTests
+      - path: Sources/OpenDisplayUSBHelper
+        excludes:
+          - App.swift
+          - UI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: build.terrynamic.opendisplay.usbhelper.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: ""
+        BUNDLE_LOADER: ""
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: "NO"
+        SWIFT_STRICT_CONCURRENCY: targeted

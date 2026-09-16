@@ -39,4 +39,24 @@ final class ForwardListParserTests: XCTestCase {
             [9000, 9010]
         )
     }
+
+    func testStaleLocalsIgnoreForeignRemotePorts() {
+        let forwards = [
+            AdbForward(serial: "S", localPort: 63029, remotePort: 12969),
+            AdbForward(serial: "S", localPort: 9010, remotePort: 9000),
+            AdbForward(serial: "S", localPort: 9000, remotePort: 9000)
+        ]
+        XCTAssertNotNil(ForwardListParser.existing(serial: "S", localPort: 9000, in: forwards))
+        XCTAssertEqual(
+            ForwardListParser.staleLocals(serial: "S", keeping: 9000, in: forwards),
+            [9010]
+        )
+        XCTAssertEqual(
+            ForwardListParser.reusableLocalPorts(serial: "S", in: forwards),
+            [9010, 9000]
+        )
+        XCTAssertFalse(
+            ForwardListParser.staleLocals(serial: "S", keeping: 9000, in: forwards).contains(63029)
+        )
+    }
 }

@@ -47,6 +47,36 @@ final class AdbClientTests: XCTestCase {
         XCTAssertEqual(runner.commands.first, ["-s", "R52", "forward", "--remove", "tcp:9000"])
     }
 
+    func testForwardDoesNotRemoveForeignRemotePorts() {
+        let mixed = """
+        S tcp:63029 tcp:12969
+        S tcp:9010 tcp:9000
+        S tcp:9000 tcp:9000
+        """
+        let runner = ScriptedAdbRunner(scripts: [
+            .init(expect: ["-s", "S", "forward", "--list"], stdout: mixed)
+        ])
+        let client = AdbClient(runner: runner)
+        XCTAssertEqual(client.forward(serial: "S", localPort: 9000), .ok)
+        XCTAssertFalse(runner.commands.contains(where: { $0.contains("--remove") }))
+    }
+
+    func testForwardRemovesOnlyOurStale9000Remote() {
+        let mixed = """
+        S tcp:63029 tcp:12969
+        S tcp:9010 tcp:9000
+        """
+        let runner = ScriptedAdbRunner(scripts: [
+            .init(expect: ["-s", "S", "forward", "--list"], stdout: mixed),
+            .init(expect: ["-s", "S", "forward", "--remove", "tcp:9010"], stdout: ""),
+            .init(expect: ["-s", "S", "forward", "--no-rebind", "tcp:9000", "tcp:9000"], stdout: "")
+        ])
+        let client = AdbClient(runner: runner)
+        XCTAssertEqual(client.forward(serial: "S", localPort: 9000), .ok)
+        XCTAssertEqual(runner.commands.count, 3)
+        XCTAssertFalse(runner.commands.contains(where: { $0.contains("63029") }))
+    }
+
     func testListForwardsFiltersToRequestedSerial() {
         let runner = ScriptedAdbRunner(scripts: [
             .init(

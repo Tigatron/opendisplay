@@ -43,6 +43,7 @@ targets:
         LSApplicationCategoryType: public.app-category.utilities
         NSBonjourServices:
           - "_opensidecar._tcp"
+        NSLocalNetworkUsageDescription: OpenDisplay USB Helper 通过 Bonjour 向本机的 OpenDisplay 应用通告 USB 连接的 Android 接收端。The helper advertises the USB-connected Android receiver to the OpenDisplay app on this Mac via Bonjour.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: build.terrynamic.opendisplay.usbhelper

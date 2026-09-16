@@ -43,8 +43,10 @@ enum ForwardListParser {
         in forwards: [AdbForward]
     ) -> [UInt16] {
         forwards.compactMap { entry in
-            guard entry.serial == serial else { return nil }
-            if entry.localPort == localPort, entry.remotePort == remotePort { return nil }
+            // Only our OpenDisplay tunnels (remote tcp:9000). Never touch
+            // another tool's forward (e.g. AndroMeld tcp:12969).
+            guard entry.serial == serial, entry.remotePort == remotePort else { return nil }
+            if entry.localPort == localPort { return nil }
             return entry.localPort
         }
     }

@@ -28,6 +28,8 @@
 	<array>
 		<string>_opensidecar._tcp</string>
 	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>OpenDisplay USB Helper 通过 Bonjour 向本机的 OpenDisplay 应用通告 USB 连接的 Android 接收端。The helper advertises the USB-connected Android receiver to the OpenDisplay app on this Mac via Bonjour.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Terrynamic</string>
 	<key>NSPrincipalClass</key>

@@ -35,6 +35,8 @@ final class HelperEngine: @unchecked Sendable {
     private var reconcileTimer: DispatchSourceTimer?
     private var started = false
     private let helperVersion: String
+    private let errorThrottle = ErrorThrottle()
+    private let localNetwork = LocalNetworkPrompt()
 
     init(
         log: HelperLogger = .shared,
@@ -55,6 +57,9 @@ final class HelperEngine: @unchecked Sendable {
             self.log.info("helper \(self.helperVersion) starting")
             self.reloadAdbAndTrack()
             self.startReconcile()
+            self.localNetwork.start(queue: self.queue) { [weak self] in
+                self?.queue.async { self?.reconcile() }
+            }
         }
     }
 
@@ -64,6 +69,7 @@ final class HelperEngine: @unchecked Sendable {
             self.started = false
             self.reconnectWork?.cancel()
             self.reconcileTimer?.cancel()
+            self.localNetwork.stop()
             self.tracker.stop()
             for serial in Array(self.slots.keys) {
                 self.teardown(serial: serial, remove: true)
@@ -263,9 +269,15 @@ final class HelperEngine: @unchecked Sendable {
                 }
                 slot.tunnel = tunnel
                 slot.reservedPort = tunnel.state.tunnelPort
-                self.log.info("\(slot.serial) phase=\(tunnel.state.phase.rawValue) port=\(tunnel.state.tunnelPort.map(String.init) ?? "-") name=\(tunnel.state.bonjourName ?? "-")")
+                let summary = "\(slot.serial) phase=\(tunnel.state.phase.rawValue) port=\(tunnel.state.tunnelPort.map(String.init) ?? "-") name=\(tunnel.state.bonjourName ?? "-")"
                 if let error = tunnel.state.lastError {
-                    self.log.error("\(slot.serial): \(error)")
+                    if self.errorThrottle.allow(key: slot.serial, message: error) {
+                        self.log.info(summary)
+                        self.log.error("\(slot.serial): \(error)")
+                    }
+                } else {
+                    self.errorThrottle.reset(key: slot.serial)
+                    self.log.info(summary)
                 }
                 self.publish()
             }

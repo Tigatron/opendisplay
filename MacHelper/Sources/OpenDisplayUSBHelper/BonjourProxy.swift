@@ -48,7 +48,7 @@ final class BonjourProxy {
         var connection: DNSServiceRef?
         var error = DNSServiceCreateConnection(&connection)
         guard error == kDNSServiceErr_NoError, let connection else {
-            onError("DNSServiceCreateConnection failed (\(error))")
+            onError(DNSServiceError.describe(error, operation: "DNSServiceCreateConnection"))
             return
         }
         self.connection = connection
@@ -78,7 +78,7 @@ final class BonjourProxy {
         }
         if error != kDNSServiceErr_NoError {
             withdraw()
-            onError("DNSServiceRegisterRecord failed (\(error))")
+            onError(DNSServiceError.describe(error, operation: "DNSServiceRegisterRecord"))
             return
         }
         self.record = record
@@ -86,7 +86,7 @@ final class BonjourProxy {
         error = DNSServiceSetDispatchQueue(connection, queue)
         if error != kDNSServiceErr_NoError {
             withdraw()
-            onError("DNSServiceSetDispatchQueue (A) failed (\(error))")
+            onError(DNSServiceError.describe(error, operation: "DNSServiceSetDispatchQueue (A)"))
             return
         }
 
@@ -116,14 +116,14 @@ final class BonjourProxy {
         }
         if error != kDNSServiceErr_NoError || service == nil {
             withdraw()
-            onError("DNSServiceRegister failed (\(error))")
+            onError(DNSServiceError.describe(error, operation: "DNSServiceRegister"))
             return
         }
         self.service = service
         error = DNSServiceSetDispatchQueue(service, queue)
         if error != kDNSServiceErr_NoError {
             withdraw()
-            onError("DNSServiceSetDispatchQueue (SRV) failed (\(error))")
+            onError(DNSServiceError.describe(error, operation: "DNSServiceSetDispatchQueue (SRV)"))
         }
     }
 
@@ -150,7 +150,7 @@ final class BonjourProxy {
         guard let context else { return }
         let proxy = Unmanaged<BonjourProxy>.fromOpaque(context).takeUnretainedValue()
         if error != kDNSServiceErr_NoError {
-            proxy.onError?("A-record registration failed (\(error))")
+            proxy.onError?(DNSServiceError.describe(error, operation: "A-record registration"))
         }
     }
 
@@ -158,7 +158,7 @@ final class BonjourProxy {
         guard let context else { return }
         let proxy = Unmanaged<BonjourProxy>.fromOpaque(context).takeUnretainedValue()
         if error != kDNSServiceErr_NoError {
-            proxy.onError?("service registration failed (\(error))")
+            proxy.onError?(DNSServiceError.describe(error, operation: "service registration"))
             return
         }
         if let name {

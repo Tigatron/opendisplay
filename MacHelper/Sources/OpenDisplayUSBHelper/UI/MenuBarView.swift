@@ -66,7 +66,7 @@ private struct DeviceMenuRow: View {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
-                    .lineLimit(2)
+                    .lineLimit(4)
             }
         }
         .padding(.vertical, 2)

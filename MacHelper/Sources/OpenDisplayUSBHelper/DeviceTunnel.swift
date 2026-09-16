@@ -188,6 +188,39 @@ final class DeviceTunnel {
         return state
     }
 
+    /// Apply a new settings snapshot to a live tunnel (heartbeat / defaults).
+    func applySettings(_ new: SettingsSnapshot) {
+        settings = new
+        apply(
+            SettingsReevaluation.actions(
+                settings: new,
+                phase: state.phase,
+                tunnelPort: state.tunnelPort,
+                heartbeatOn: state.heartbeatOn,
+                wroteDefaults: state.wroteDefaults
+            )
+        )
+    }
+
+    func apply(_ action: TunnelSettingsAction) {
+        if action.startHeartbeat, let port = state.tunnelPort {
+            hooks.startHeartbeat(state.serial, port)
+            state.heartbeatOn = true
+        }
+        if action.stopHeartbeat {
+            hooks.stopHeartbeat()
+            state.heartbeatOn = false
+        }
+        if action.writeDefaults {
+            hooks.writeDefaults()
+            state.wroteDefaults = true
+        }
+        if action.revertDefaults {
+            hooks.revertDefaults()
+            state.wroteDefaults = false
+        }
+    }
+
     func teardown(keepRowPhase: DevicePhase) {
         hooks.stopHeartbeat()
         hooks.withdraw()

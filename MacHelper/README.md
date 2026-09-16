@@ -37,6 +37,14 @@ Or open `OpenDisplayUSBHelper.xcodeproj` in Xcode after `./generate.sh`. Signing
 
 macOS Local Network permission is keyed to that bundle id. After this rename, System Settings will treat the helper as a new app — allow it again under Privacy & Security → Local Network.
 
+Release package (ad-hoc signed, no team) and install into `/Applications` (required for `SMAppService` Start at login):
+
+```sh
+cd MacHelper
+./build-release.sh          # writes MacHelper/dist/OpenDisplay USB Helper.app
+./install.sh                # ditto → /Applications, launch, remind about Local Network
+```
+
 Unit tests (no adb, no network, no tablet):
 
 ```sh
@@ -105,7 +113,25 @@ and deletes those keys when the tunnel goes down. The stock app reads `host`/`po
 | Launch receiver app on attach | on | `am start -n com.terrynamic.opendisplay/.MainActivity` |
 | Send USB heartbeat (B2 auto-upgrade) | on | See above; only when `P == 9000` |
 | Auto-connect running Mac app | off | Writes OpenDisplay `host`/`port` |
-| Start at login | off | `SMAppService.mainApp` |
+| Start at login | off | `SMAppService.mainApp` (only from `/Applications`) |
+
+UserDefaults domain is the helper bundle id. The engine observes `UserDefaults.didChangeNotification` and reloads while running, so `defaults write` applies to a live helper (enabling `writeOpenDisplayDefaults` with a :9000 tunnel already up writes `host`/`port` immediately; disabling deletes them).
+
+```sh
+defaults write com.terrynamic.opendisplay.usbhelper adbPathOverride -string "/opt/homebrew/bin/adb"
+defaults write com.terrynamic.opendisplay.usbhelper launchReceiverOnAttach -bool true
+defaults write com.terrynamic.opendisplay.usbhelper sendHeartbeat -bool true
+defaults write com.terrynamic.opendisplay.usbhelper writeOpenDisplayDefaults -bool true
+defaults write com.terrynamic.opendisplay.usbhelper startAtLogin -bool false
+```
+
+| Key | Type | Default |
+|---|---|---|
+| `adbPathOverride` | string | empty |
+| `launchReceiverOnAttach` | bool | true |
+| `sendHeartbeat` | bool | true |
+| `writeOpenDisplayDefaults` | bool | false |
+| `startAtLogin` | bool | false |
 
 Logs: `~/Library/Logs/OpenDisplayUSBHelper/helper.log` (rotated at 4 MiB).
 

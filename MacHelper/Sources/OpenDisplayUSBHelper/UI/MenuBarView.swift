@@ -35,6 +35,12 @@ struct MenuBarView: View {
 
         Divider()
 
+        Text("Local Network: \(controller.snapshot.localNetworkPermission.rawValue)")
+            .foregroundStyle(.secondary)
+        Button("Open Privacy Settings") { controller.openPrivacySettings() }
+
+        Divider()
+
         Button("Open OpenDisplay") { controller.openOpenDisplay() }
         Button("Reveal Log") { controller.revealLog() }
         Button("Settings…") { controller.openSettings() }

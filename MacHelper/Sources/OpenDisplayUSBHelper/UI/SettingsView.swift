@@ -32,7 +32,7 @@ struct SettingsView: View {
                 Toggle("Launch receiver app on attach", isOn: $settings.launchReceiverOnAttach)
                 Toggle("Send USB heartbeat (B2 auto-upgrade)", isOn: $settings.sendHeartbeat)
                 Toggle("Auto-connect running Mac app (writes OpenDisplay preferences)", isOn: $settings.writeOpenDisplayDefaults)
-                Text("Auto-connect writes host=127.0.0.1 and port=9000 into the stock OpenDisplay defaults domain (\(HelperConstants.openDisplayDefaultsDomain)) so an already-running sender dials the USB tunnel. It is deleted again when that tunnel goes down. Leave this off unless you want the running app to connect without clicking.")
+                Text("Writes host=127.0.0.1 and port=9000 into \(HelperConstants.openDisplayDefaultsDomain). The stock app reads those keys at launch, so writing while OpenDisplay is not running is intended. Enabling this while a :9000 tunnel is already up writes immediately; turning it off deletes the keys.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -40,6 +40,23 @@ struct SettingsView: View {
             Section("Start at login") {
                 Toggle("Start at login", isOn: loginBinding)
                 Text(HelperSettings.loginItemLabel(settings.loginItemStatus))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !InstallLocation.isRunningFromApplications {
+                    Text(InstallLocation.loginItemHint)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            Section("Command line") {
+                Text("UserDefaults domain: \(HelperSettings.defaultsDomain)")
+                    .font(.caption)
+                    .textSelection(.enabled)
+                Text("defaults write \(HelperSettings.defaultsDomain) writeOpenDisplayDefaults -bool true")
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                Text("Keys: adbPathOverride, launchReceiverOnAttach, sendHeartbeat, writeOpenDisplayDefaults, startAtLogin. Changes are picked up while the helper is running.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -65,7 +82,7 @@ struct SettingsView: View {
 
     private var loginBinding: Binding<Bool> {
         Binding(
-            get: { settings.loginItemStatus == .enabled },
+            get: { settings.startAtLogin },
             set: { enabled in
                 do {
                     try settings.setStartAtLogin(enabled)

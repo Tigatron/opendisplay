@@ -43,7 +43,10 @@ final class HelperController: ObservableObject {
         pushSettings()
         refreshLog()
         logTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshLog() }
+            Task { @MainActor in
+                self?.settings.reloadIfChanged()
+                self?.refreshLog()
+            }
         }
     }
 
@@ -84,6 +87,10 @@ final class HelperController: ObservableObject {
     func openSettings() {
         NSApp.activate(ignoringOtherApps: true)
         NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+
+    func openPrivacySettings() {
+        NSWorkspace.shared.open(PrivacySettings.localNetworkURL)
     }
 
     func quit() {

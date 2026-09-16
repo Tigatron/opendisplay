@@ -6,6 +6,7 @@ struct HelperSnapshot: Equatable {
     var statusText: String
     var devices: [DeviceRowState]
     var lastError: String?
+    var localNetworkPermission: LocalNetworkPermission = .unknown
 }
 
 /// Owns adb tracking and per-device tunnels. All mutable state lives on
@@ -37,6 +38,7 @@ final class HelperEngine: @unchecked Sendable {
     private let helperVersion: String
     private let errorThrottle = ErrorThrottle()
     private let localNetwork = LocalNetworkPrompt()
+    private var localNetworkPermission: LocalNetworkPermission = .unknown
 
     init(
         log: HelperLogger = .shared,
@@ -86,6 +88,9 @@ final class HelperEngine: @unchecked Sendable {
             if adbChanged {
                 self.log.info("adb override changed — restarting tracker")
                 self.reloadAdbAndTrack()
+            }
+            for slot in self.slots.values {
+                slot.tunnel?.applySettings(snapshot)
             }
             self.publish()
         }
@@ -369,9 +374,17 @@ final class HelperEngine: @unchecked Sendable {
             }
             let wait = done.wait(timeout: .now() + 3)
             if wait == .timedOut {
+                self.noteDNSServiceResult(succeeded: false, message: "registration timed out")
                 return .failure(NSError(domain: "Bonjour", code: -2, userInfo: [NSLocalizedDescriptionKey: "registration timed out"]))
             }
-            return box.value ?? .failure(NSError(domain: "Bonjour", code: -3))
+            let result = box.value ?? .failure(NSError(domain: "Bonjour", code: -3))
+            switch result {
+            case .success:
+                self.noteDNSServiceResult(succeeded: true, message: nil)
+            case .failure(let error):
+                self.noteDNSServiceResult(succeeded: false, message: error.localizedDescription)
+            }
+            return result
         }
         hooks.withdraw = { [weak self, weak slot] in
             guard let self, let slot else { return }
@@ -524,8 +537,20 @@ final class HelperEngine: @unchecked Sendable {
             adbVersion: adbVersion,
             statusText: statusText,
             devices: devices,
-            lastError: lastError
+            lastError: lastError,
+            localNetworkPermission: localNetworkPermission
         )
+    }
+
+    private func noteDNSServiceResult(succeeded: Bool, message: String?) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.localNetworkPermission = LocalNetworkPermission.fromLastResult(
+                succeeded: succeeded,
+                errorMessage: message
+            )
+            self.publish()
+        }
     }
 
     private func publish() {

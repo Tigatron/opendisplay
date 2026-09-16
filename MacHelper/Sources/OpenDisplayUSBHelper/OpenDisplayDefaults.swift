@@ -1,8 +1,8 @@
 import Foundation
 
-/// Writes the stock OpenDisplay app's `host`/`port` keys so an already-running
-/// sender auto-dials the USB tunnel. Off by default — it mutates another
-/// app's preferences.
+/// Writes the stock OpenDisplay app's `host`/`port` keys. The stock app
+/// reads them at launch, so writing while OpenDisplay is not running is
+/// intended. Off by default — it mutates another app's preferences.
 enum OpenDisplayDefaults {
     static let domain = HelperConstants.openDisplayDefaultsDomain
 

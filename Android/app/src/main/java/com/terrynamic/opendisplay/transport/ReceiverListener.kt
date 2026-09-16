@@ -5,6 +5,7 @@ import android.util.Log
 import com.terrynamic.opendisplay.protocol.WireProtocol
 import org.json.JSONObject
 import java.io.IOException
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -19,7 +20,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 class ReceiverListener(
     private val port: Int = WireProtocol.DEFAULT_PORT,
-    private val helloProvider: () -> JSONObject,
+    private val helloProvider: (InetAddress?) -> JSONObject,
     private val onSession: SessionCallbacks,
 ) {
     interface SessionCallbacks {
@@ -139,12 +140,14 @@ class ReceiverListener(
 
     private fun sendHelloSync(socket: Socket) {
         try {
-            val json = helloProvider()
+            val json = helloProvider(socket.inetAddress)
             val payload = json.toString().toByteArray(Charsets.UTF_8)
             Framer.write(socket.getOutputStream(), payload)
+            val port = json.optInt("cursorPort", -1)
             Log.i(
                 WireProtocol.LOG_TAG,
-                "hello sent ${json.optInt("pixelsWide")}x${json.optInt("pixelsHigh")}",
+                "hello sent ${json.optInt("pixelsWide")}x${json.optInt("pixelsHigh")}" +
+                    if (port > 0) " cursorPort=$port" else "",
             )
         } catch (e: Exception) {
             Log.w(WireProtocol.LOG_TAG, "hello send failed: ${e.message}")

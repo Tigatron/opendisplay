@@ -37,6 +37,8 @@ class StatsJsonTest {
         assertFalse(json.getBoolean("offsetKnown"))
         assertFalse(json.has("e2e50"))
         assertFalse(json.has("e2e95"))
+        assertEquals(0, json.getInt("cursorUpdates"))
+        assertEquals(0, json.getInt("cursorLost"))
     }
 
     @Test

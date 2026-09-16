@@ -15,6 +15,7 @@ object ControlMessages {
         maxEncodeWide: Int? = null,
         maxEncodeHigh: Int? = null,
         addrs: List<String> = emptyList(),
+        cursorPort: Int? = null,
     ): JSONObject = JSONObject()
         .put("type", WireMessage.HELLO)
         .put("pixelsWide", pixelsWide)
@@ -30,6 +31,9 @@ object ControlMessages {
             }
             if (addrs.isNotEmpty()) {
                 json.put("addrs", JSONArray(addrs))
+            }
+            if (cursorPort != null) {
+                json.put("cursorPort", cursorPort)
             }
         }
 
@@ -71,6 +75,8 @@ object ControlMessages {
         offsetKnown: Boolean,
         e2e50: Double? = null,
         e2e95: Double? = null,
+        cursorUpdates: Int = 0,
+        cursorLost: Int = 0,
     ): JSONObject = JSONObject()
         .put("type", WireMessage.STATS)
         .put("transport", transport)
@@ -88,7 +94,11 @@ object ControlMessages {
                 json.put("e2e50", e2e50)
                 json.put("e2e95", e2e95)
             }
+            json.put("cursorUpdates", cursorUpdates)
+            json.put("cursorLost", cursorLost)
         }
+
+    fun cursorAck(): JSONObject = JSONObject().put("type", WireMessage.CURSOR_ACK)
 
     fun sleeping(): JSONObject = JSONObject().put("type", WireMessage.SLEEPING)
 

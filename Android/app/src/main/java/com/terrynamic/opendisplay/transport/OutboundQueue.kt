@@ -16,6 +16,7 @@ enum class OutboundKind {
     STATS,
     SLEEPING,
     CLOSING,
+    CURSOR_ACK,
 }
 
 data class OutboundMessage(

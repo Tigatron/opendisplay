@@ -32,4 +32,5 @@ object WireMessage {
     const val CLOSING = "closing"
     const val CURSOR = "cursor"
     const val CURSOR_IMG = "cursorImg"
+    const val CURSOR_ACK = "cursorAck"
 }

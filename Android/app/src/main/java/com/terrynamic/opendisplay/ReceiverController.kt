@@ -8,6 +8,8 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import com.terrynamic.opendisplay.link.LinkPolicy
+import com.terrynamic.opendisplay.cursor.CursorChannel
+import com.terrynamic.opendisplay.cursor.CursorUdpSocket
 import com.terrynamic.opendisplay.protocol.ClockOffset
 import com.terrynamic.opendisplay.protocol.ControlMessages
 import com.terrynamic.opendisplay.protocol.InboundControl
@@ -34,6 +36,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import org.json.JSONObject
+import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToInt
@@ -78,7 +82,8 @@ class ReceiverController(private val app: Application) {
 
     private var listener: ReceiverListener? = null
     private var sessionGeneration = 0L
-    private var lastCursorSeq = 0L
+    private val cursorChannel = CursorChannel()
+    private var cursorUdp: CursorUdpSocket? = null
     private var lastAdvertisedAddrs: List<String> = emptyList()
     private var lastHelloWide = 0
     private var lastHelloHigh = 0
@@ -234,6 +239,7 @@ class ReceiverController(private val app: Application) {
         val renamed = settings.serviceName != previous.serviceName
         val helloChanged = settings.decodeCeiling != previous.decodeCeiling ||
             settings.virtualDesktop != previous.virtualDesktop
+        val cursorChanged = settings.cursorUdp != previous.cursorUdp
         _state.update {
             it.copy(
                 settings = settings,
@@ -246,7 +252,10 @@ class ReceiverController(private val app: Application) {
         if (renamed && listeningEnabled && !asleep) {
             nsd.rename(settings.serviceName)
         }
-        if (helloChanged && listener?.liveConnection != null) {
+        if (cursorChanged && !settings.cursorUdp) {
+            stopCursorUdp()
+        }
+        if ((helloChanged || cursorChanged) && listener?.liveConnection != null) {
             sendHello()
         }
     }
@@ -263,7 +272,7 @@ class ReceiverController(private val app: Application) {
         }
     }
 
-    fun helloJson(): JSONObject {
+    fun helloJson(peer: InetAddress? = null): JSONObject {
         if (!panel.isReady) {
             val ready = PanelReadyGate.awaitReady(
                 isReady = { panel.isReady },
@@ -290,6 +299,13 @@ class ReceiverController(private val app: Application) {
         lastHelloHigh = high
         lastAdvertisedAddrs = addrs
         publishAnnouncedGeometry(wide, high)
+        val loopback = peer?.isLoopbackAddress == true
+        val boundPort = if (settings.cursorUdp && !loopback && peer != null) {
+            ensureCursorUdp()
+        } else {
+            null
+        }
+        val cursorPort = CursorChannel.advertisedPort(settings.cursorUdp, loopback, boundPort)
         return ControlMessages.hello(
             pixelsWide = wide,
             pixelsHigh = high,
@@ -299,6 +315,7 @@ class ReceiverController(private val app: Application) {
             maxEncodeWide = ceiling?.wide,
             maxEncodeHigh = ceiling?.high,
             addrs = addrs,
+            cursorPort = cursorPort,
         )
     }
 
@@ -312,7 +329,7 @@ class ReceiverController(private val app: Application) {
     private fun startListenerLocked() {
         if (listener != null) return
         val current = ReceiverListener(
-            helloProvider = { helloJson() },
+            helloProvider = { peer -> helloJson(peer) },
             onSession = object : ReceiverListener.SessionCallbacks {
                 override fun onAdopted(
                     connection: FramedConnection,
@@ -360,6 +377,7 @@ class ReceiverController(private val app: Application) {
         decoder.reset()
         clock.reset()
         kfThrottle.invalidateAll()
+        stopCursorUdp()
         resetCursor()
         sessionGeneration = 0
         _state.update {
@@ -375,7 +393,7 @@ class ReceiverController(private val app: Application) {
 
     private fun adoptSession(connection: FramedConnection, generation: Long, transport: String) {
         sessionGeneration = generation
-        lastCursorSeq = 0
+        cursorChannel.resetSession()
         clock.reset()
         latency.reset()
         kfThrottle.invalidateAll()
@@ -462,12 +480,9 @@ class ReceiverController(private val app: Application) {
             }
             WireMessage.CURSOR -> {
                 val pos = InboundControl.cursorPosition(obj) ?: return
-                val seq = pos.sequence
-                if (seq != null && seq <= lastCursorSeq) return
-                if (seq != null) lastCursorSeq = seq
-                _state.update {
-                    it.copy(cursor = it.cursor.copy(x = pos.x, y = pos.y, visible = pos.visible))
-                }
+                val decision = cursorChannel.onTcp(pos.sequence)
+                if (!decision.apply) return
+                applyCursor(pos.x, pos.y, pos.visible)
             }
             WireMessage.CURSOR_IMG -> {
                 val image = InboundControl.cursorImage(obj) ?: return
@@ -510,13 +525,18 @@ class ReceiverController(private val app: Application) {
     }
 
     private fun sendHello() {
-        val json = helloJson()
+        val peer = listener?.liveConnection?.connection?.remoteAddress
+        val json = helloJson(peer)
         listener?.sendControl(OutboundKind.HELLO, json)
         val wide = json.optInt("pixelsWide")
         val high = json.optInt("pixelsHigh")
         val encodeW = json.optInt("maxEncodeWide", -1)
         val encodeH = json.optInt("maxEncodeHigh", -1)
-        Log.i(WireProtocol.LOG_TAG, "hello sent ${wide}x${high}")
+        val cursorPort = json.optInt("cursorPort", -1)
+        Log.i(
+            WireProtocol.LOG_TAG,
+            "hello sent ${wide}x${high}" + if (cursorPort > 0) " cursorPort=$cursorPort" else "",
+        )
         if (encodeW > 0 && encodeH > 0 && (encodeW < wide || encodeH < high)) {
             Log.i(WireProtocol.LOG_TAG, "stream capped at ${encodeW}x${encodeH}")
         }
@@ -578,8 +598,49 @@ class ReceiverController(private val app: Application) {
                 offsetKnown = offsetKnown,
                 e2e50 = latencySnap.e2e50,
                 e2e95 = latencySnap.e2e95,
+                cursorUpdates = cursorChannel.cursorUpdates,
+                cursorLost = cursorChannel.cursorLost,
             ),
         )
+    }
+
+    private fun applyCursor(x: Float, y: Float, visible: Boolean) {
+        _state.update {
+            it.copy(cursor = it.cursor.copy(x = x, y = y, visible = visible))
+        }
+    }
+
+    @Synchronized
+    private fun ensureCursorUdp(): Int? {
+        cursorUdp?.boundPort?.let { return it }
+        val socket = CursorUdpSocket { from, bytes ->
+            handler.post { handleCursorDatagram(from, bytes) }
+        }
+        val port = socket.start() ?: return null
+        cursorUdp = socket
+        return port
+    }
+
+    @Synchronized
+    private fun stopCursorUdp() {
+        cursorUdp?.stop()
+        cursorUdp = null
+    }
+
+    private fun handleCursorDatagram(from: InetSocketAddress, bytes: ByteArray) {
+        val obj = InboundControl.parse(bytes) ?: return
+        if (obj.optString("type") != WireMessage.CURSOR) return
+        val pos = InboundControl.cursorPosition(obj) ?: return
+        val seq = pos.sequence ?: return
+        val host = from.address?.hostAddress ?: from.hostString ?: return
+        val decision = cursorChannel.onUdp(host, from.port, seq)
+        if (decision.sendAck) {
+            listener?.sendControl(OutboundKind.CURSOR_ACK, ControlMessages.cursorAck())
+            Log.i(WireProtocol.LOG_TAG, "cursorAck sent")
+        }
+        if (decision.apply) {
+            applyCursor(pos.x, pos.y, pos.visible)
+        }
     }
 
     private fun refreshAnnouncedGeometry() {
@@ -625,7 +686,7 @@ class ReceiverController(private val app: Application) {
     }
 
     private fun resetCursor() {
-        lastCursorSeq = 0
+        cursorChannel.resetSession()
         _state.update { it.copy(cursor = CursorUi()) }
     }
 

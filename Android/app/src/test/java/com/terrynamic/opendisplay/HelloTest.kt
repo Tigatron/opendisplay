@@ -32,6 +32,27 @@ class HelloTest {
     }
 
     @Test
+    fun cursorPort_presentOnlyWhenOffered() {
+        val wifi = ControlMessages.hello(
+            pixelsWide = 2800,
+            pixelsHigh = 1752,
+            scale = 2.0f,
+            device = "AndroidTablet",
+            installId = "TEST-ID",
+            cursorPort = 9001,
+        )
+        assertEquals(9001, wifi.getInt("cursorPort"))
+        val usb = ControlMessages.hello(
+            pixelsWide = 2800,
+            pixelsHigh = 1752,
+            scale = 2.0f,
+            device = "AndroidTablet",
+            installId = "TEST-ID",
+        )
+        assertFalse(usb.has("cursorPort"))
+    }
+
+    @Test
     fun ceilingAndAddrs_presentWhenConfigured() {
         val json = ControlMessages.hello(
             pixelsWide = 2800,

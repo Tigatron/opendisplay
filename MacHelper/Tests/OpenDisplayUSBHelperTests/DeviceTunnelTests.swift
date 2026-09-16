@@ -130,6 +130,52 @@ final class DeviceTunnelTests: XCTestCase {
         XCTAssertTrue(log.events.contains("withdraw") || state.tunnelPort == nil)
     }
 
+    func testApplySettingsWritesDefaultsOnLive9000() {
+        let log = HookLog()
+        var settings = SettingsSnapshot(
+            adbPathOverride: "",
+            launchReceiverOnAttach: false,
+            sendHeartbeat: false,
+            writeOpenDisplayDefaults: false
+        )
+        let tunnel = makeTunnel(log: log, port: 9000, settings: settings)
+        _ = tunnel.attach()
+        XCTAssertFalse(tunnel.state.wroteDefaults)
+
+        settings.writeOpenDisplayDefaults = true
+        tunnel.applySettings(settings)
+        XCTAssertTrue(tunnel.state.wroteDefaults)
+        XCTAssertTrue(log.events.contains("write defaults"))
+
+        settings.writeOpenDisplayDefaults = false
+        tunnel.applySettings(settings)
+        XCTAssertFalse(tunnel.state.wroteDefaults)
+        XCTAssertTrue(log.events.contains("revert defaults"))
+    }
+
+    func testApplySettingsTogglesHeartbeatOnLive9000() {
+        let log = HookLog()
+        var settings = SettingsSnapshot(
+            adbPathOverride: "",
+            launchReceiverOnAttach: false,
+            sendHeartbeat: false,
+            writeOpenDisplayDefaults: false
+        )
+        let tunnel = makeTunnel(log: log, port: 9000, settings: settings)
+        _ = tunnel.attach()
+        XCTAssertFalse(tunnel.state.heartbeatOn)
+
+        settings.sendHeartbeat = true
+        tunnel.applySettings(settings)
+        XCTAssertTrue(tunnel.state.heartbeatOn)
+        XCTAssertTrue(log.events.contains("heartbeat on R52T30ABC:9000"))
+
+        settings.sendHeartbeat = false
+        tunnel.applySettings(settings)
+        XCTAssertFalse(tunnel.state.heartbeatOn)
+        XCTAssertTrue(log.events.contains("heartbeat off"))
+    }
+
     func testPublishUsesSyntheticTXTIdentityNotReceiverID() {
         let log = HookLog()
         let tunnel = makeTunnel(log: log, port: 9000)

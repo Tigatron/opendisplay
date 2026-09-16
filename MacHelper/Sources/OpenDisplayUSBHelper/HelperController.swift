@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import Foundation
 
 @MainActor
@@ -15,8 +16,10 @@ final class HelperController: ObservableObject {
 
     private let engine: HelperEngine
     private let settings: HelperSettings
+    private let termination = TerminationCoordinator()
     private var cancellables = Set<AnyCancellable>()
     private var logTimer: Timer?
+    private var sigtermSource: DispatchSourceSignal?
 
     init(settings: HelperSettings) {
         self.settings = settings
@@ -26,6 +29,7 @@ final class HelperController: ObservableObject {
             }
         }
         self.engine = engine
+        termination.teardownAll = { engine.stopAndWait() }
         NotificationCenter.default.publisher(for: HelperController.snapshotNote)
             .compactMap { $0.object as? HelperSnapshot }
             .receive(on: RunLoop.main)
@@ -93,9 +97,32 @@ final class HelperController: ObservableObject {
         NSWorkspace.shared.open(PrivacySettings.localNetworkURL)
     }
 
+    func prepareToQuit() {
+        termination.runOnce()
+    }
+
     func quit() {
-        engine.stop()
+        prepareToQuit()
         NSApp.terminate(nil)
+    }
+
+    func installProcessTerminationHooks() {
+        guard sigtermSource == nil else { return }
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { [weak self] in
+            self?.prepareToQuit()
+            NSApp.terminate(nil)
+        }
+        source.resume()
+        sigtermSource = source
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.prepareToQuit()
+        }
     }
 
     func validateAdb(_ path: String) -> String {

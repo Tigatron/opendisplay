@@ -67,17 +67,19 @@ final class HelperEngine: @unchecked Sendable {
 
     func stop() {
         queue.async { [weak self] in
-            guard let self else { return }
-            self.started = false
-            self.reconnectWork?.cancel()
-            self.reconcileTimer?.cancel()
-            self.localNetwork.stop()
-            self.tracker.stop()
-            for serial in Array(self.slots.keys) {
-                self.teardown(serial: serial, remove: true)
-            }
-            self.publish()
+            self?.stopLocked(waitForIO: false)
         }
+    }
+
+    /// Blocks until Bonjour, heartbeats, and OpenDisplay defaults are torn down.
+    /// Call from Quit / SIGTERM / `applicationShouldTerminate` on a non-engine thread.
+    func stopAndWait(timeout: TimeInterval = 8) {
+        let done = DispatchSemaphore(value: 0)
+        queue.async { [weak self] in
+            self?.stopLocked(waitForIO: true)
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + timeout)
     }
 
     func updateSettings(_ snapshot: SettingsSnapshot) {
@@ -411,22 +413,43 @@ final class HelperEngine: @unchecked Sendable {
         )
     }
 
-    private func teardown(serial: String, remove: Bool, adb: TrackedDevice? = nil) {
+    private func stopLocked(waitForIO: Bool) {
+        log.info("helper stopping — tearing down \(slots.count) device(s)")
+        started = false
+        reconnectWork?.cancel()
+        reconcileTimer?.cancel()
+        reconcileTimer = nil
+        localNetwork.stop()
+        tracker.stop()
+        for serial in Array(slots.keys) {
+            teardown(serial: serial, remove: true, waitForIO: waitForIO)
+        }
+        publish()
+    }
+
+    private func teardown(serial: String, remove: Bool, adb: TrackedDevice? = nil, waitForIO: Bool = false) {
         guard let slot = slots[serial] else { return }
         slot.generation += 1
         slot.busy = false
         stopHeartbeat(slot)
         slot.proxy?.withdraw()
         slot.proxy = nil
-        if let port = slot.tunnel?.state.tunnelPort {
-            let client = cachedClient(path: adbPath)
-            let deviceSerial = slot.serial
-            io.async {
+        let port = slot.tunnel?.state.tunnelPort
+        let revertDefaults = slot.tunnel?.state.wroteDefaults == true
+        let client = cachedClient(path: adbPath)
+        let deviceSerial = slot.serial
+        let ioWork = {
+            if let port {
                 client?.removeForward(serial: deviceSerial, localPort: port)
             }
+            if revertDefaults {
+                OpenDisplayDefaults.revertTunnel()
+            }
         }
-        if slot.tunnel?.state.wroteDefaults == true {
-            io.async { OpenDisplayDefaults.revertTunnel() }
+        if waitForIO {
+            ioWork()
+        } else {
+            io.async(execute: ioWork)
         }
         slot.reservedPort = nil
         if remove {

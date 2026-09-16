@@ -428,8 +428,8 @@ class ReceiverController(private val app: Application) {
         decoder.setQueueDepth(TransportBuffering.queueFrames(transport))
         resetCursor()
         lastPingAt = 0
-        lastStatsAt = 0
-        windowStartMs = SystemClock.elapsedRealtime()
+        lastStatsAt = SystemClock.elapsedRealtime()
+        windowStartMs = lastStatsAt
         framesThisWindow.set(0)
         bytesThisWindow.set(0)
         senderHealth = null

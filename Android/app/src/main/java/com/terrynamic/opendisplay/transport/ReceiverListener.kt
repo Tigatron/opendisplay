@@ -39,12 +39,15 @@ class ReceiverListener(
     private val running = AtomicBoolean(false)
     private val machine = NewcomerMachine()
     private val machineLock = Any()
+    private val bindLock = Any()
     private val generation = AtomicLong(0)
     private val sockets = ConcurrentHashMap<Long, Socket>()
     private val timeouts = ConcurrentHashMap<Long, ScheduledFuture<*>>()
-    private var server: ServerSocket? = null
     private var acceptThread: Thread? = null
     private var scheduler: ScheduledExecutorService? = null
+
+    @Volatile
+    private var listen: ListenBind? = null
 
     @Volatile
     var liveConnection: LiveSession? = null
@@ -55,14 +58,8 @@ class ReceiverListener(
         scheduler = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "od-park").apply { isDaemon = true }
         }
-        val serverSocket = ServerSocket().apply {
-            reuseAddress = true
-            bind(InetSocketAddress("0.0.0.0", port), 8)
-            // Inherited by accepted sockets; see TransportBuffering.
-            receiveBufferSize = TransportBuffering.LISTEN_RECEIVE_BUFFER
-        }
-        server = serverSocket
-        acceptThread = Thread({ acceptLoop(serverSocket) }, "od-accept").apply {
+        rebind(ListenerGate.WILDCARD)
+        acceptThread = Thread({ acceptLoop() }, "od-accept").apply {
             isDaemon = true
             start()
         }
@@ -72,11 +69,13 @@ class ReceiverListener(
 
     fun stop() {
         if (!running.compareAndSet(true, false)) return
-        try {
-            server?.close()
-        } catch (_: Exception) {
+        synchronized(bindLock) {
+            try {
+                listen?.server?.close()
+            } catch (_: Exception) {
+            }
+            listen = null
         }
-        server = null
         acceptThread?.interrupt()
         acceptThread = null
         timeouts.values.forEach { it.cancel(true) }
@@ -99,10 +98,28 @@ class ReceiverListener(
         enqueue(OutboundMessage(kind, json.toString().toByteArray(Charsets.UTF_8)))
     }
 
-    private fun acceptLoop(serverSocket: ServerSocket) {
+    private fun acceptLoop() {
         while (running.get()) {
+            val snap = listen
+            if (snap == null) {
+                try {
+                    Thread.sleep(10)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+                continue
+            }
             try {
-                val socket = serverSocket.accept()
+                val socket = snap.server.accept()
+                val current = listen
+                if (current == null ||
+                    !ListenerGate.acceptIsCurrent(snap.generation, current.generation) ||
+                    current.server !== snap.server
+                ) {
+                    Log.i(WireProtocol.LOG_TAG, "stale accept after listener swap — closed")
+                    closeQuietly(socket)
+                    continue
+                }
                 FramedConnection.configureSocket(socket)
                 val id = generation.incrementAndGet()
                 sockets[id] = socket
@@ -112,10 +129,54 @@ class ReceiverListener(
                 }
                 applyActions(actions, initialSocket = socket)
             } catch (e: IOException) {
-                if (running.get()) {
+                val stillCurrent = running.get() && listen?.server === snap.server
+                if (stillCurrent) {
                     Log.w(WireProtocol.LOG_TAG, "accept failed: ${e.message}")
                 }
             }
+        }
+    }
+
+    private fun syncBindToLiveSession() {
+        val live = liveConnection
+        val host = ListenerGate.bindHost(
+            ListenerGate.SessionState(
+                hasLiveSession = live != null,
+                transport = live?.transport,
+            ),
+        )
+        rebind(host)
+    }
+
+    private fun rebind(host: String) {
+        synchronized(bindLock) {
+            if (!running.get()) return
+            val current = listen
+            if (current != null && current.host == host && !current.server.isClosed) return
+            val next = ServerSocket()
+            next.reuseAddress = true
+            try {
+                current?.server?.close()
+            } catch (_: Exception) {
+            }
+            try {
+                next.bind(InetSocketAddress(host, port), 8)
+                next.receiveBufferSize = TransportBuffering.LISTEN_RECEIVE_BUFFER
+            } catch (e: Exception) {
+                Log.w(WireProtocol.LOG_TAG, "listener rebind $host:$port failed: ${e.message}")
+                try {
+                    next.close()
+                } catch (_: Exception) {
+                }
+                return
+            }
+            listen = ListenBind(
+                server = next,
+                generation = (current?.generation ?: 0L) + 1L,
+                host = host,
+            )
+            val extra = if (host == ListenerGate.LOOPBACK) " (usb session active)" else ""
+            Log.i(WireProtocol.LOG_TAG, "listener bound $host:$port$extra")
         }
     }
 
@@ -229,6 +290,7 @@ class ReceiverListener(
             transport = connection.transport,
         )
         liveConnection = session
+        syncBindToLiveSession()
         session.onFrame = onSession.onAdopted(connection, id, initialBytes, connection.transport)
         session.writer = Thread({ writeLoop(session) }, "od-write").apply {
             isDaemon = true
@@ -288,6 +350,7 @@ class ReceiverListener(
             val actions = synchronized(machineLock) { machine.onClosed(session.generation) }
             applyActions(actions)
             onSession.onSessionClosed(session.generation)
+            syncBindToLiveSession()
         }
     }
 
@@ -317,4 +380,10 @@ class ReceiverListener(
             connection.close()
         }
     }
+
+    private data class ListenBind(
+        val server: ServerSocket,
+        val generation: Long,
+        val host: String,
+    )
 }

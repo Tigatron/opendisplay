@@ -46,6 +46,8 @@ adb shell am broadcast \
 
 While that heartbeat is fresh (`port == 9000` and within `ttlMs`, default 15 s), `hello.addrs` is `["127.0.0.1"]` so the stock sender can probe the cable path (PROTOCOL.md §6.4). When it expires, `addrs` is omitted.
 
+The stock Mac app remembers **both** Bonjour entries (`SM-X800 (USB)` via the helper proxy and `BUILD.TERRYNAMIC` on Wi-Fi) and will auto-dial both. The receiver therefore prefers USB: while the live session's peer is loopback it rebinds TCP 9000 from `0.0.0.0` to `127.0.0.1` so Wi-Fi dials get `ECONNREFUSED` and the Mac drops that session after three refusals. The loopback listener stays up for helper probes and cable upgrades. When the USB session ends (EOF/RST/watchdog) — not when the 15 s heartbeat expires — it immediately rebinds `0.0.0.0:9000` so Wi-Fi fallback can redial within ~1–2 s. NSD stays registered the whole time. A Wi-Fi newcomer that already passed `accept` before the swap still follows the normal 3 s parking rule.
+
 Do not change the tablet USB mode (`svc usb setFunctions`). Stop any other app bound to :9000 before testing:
 
 ```bash
@@ -93,7 +95,7 @@ adb shell content update --uri content://com.terrynamic.opendisplay.info --bind 
 | Video | Annex-B, 4-byte start codes, optional `{cap,snd}` telemetry prefix (hand-parsed), SPS-derived size, async `MediaCodec` + `SurfaceView`. |
 | Buffering | Listen `SO_RCVBUF` is 1 MiB (inherited at accept). Decoder queue: usb 3 frames / wifi 8 frames, 12 MiB bytes cap. |
 | Input | One-finger `touch` (normalized in the letterboxed video rect). Two-finger `scroll` in video pixels, natural sign. |
-| USB class | Peer 127.0.0.1 / ::1 / ::ffff:127.0.0.1 → `usb`, else `wifi`. |
+| USB class | Peer 127.0.0.1 / ::1 / ::ffff:127.0.0.1 → `usb`, else `wifi`. Live `usb` rebinds the listener to `127.0.0.1` so the stock Mac's parallel Wi-Fi Bonjour dial is refused. |
 
 Unknown control `type` values are ignored (logged once per type).
 
@@ -107,7 +109,7 @@ Wi-Fi sessions bind UDP on TCP port + 1 (`9001`, or an ephemeral port if taken) 
 
 ## Stats
 
-Every 5 s the receiver sends `stats` and (if enabled) paints a top-left overlay:
+Every 5 s the receiver sends `stats` (first report waits for a full 5 s window after adopt) and (if enabled) paints a top-left overlay:
 
 `transport, fps, mbps, e2e50, e2e95, ph50, ph95, dec50, stalls, queue, drops, offsetKnown, cursorUpdates, cursorLost`
 

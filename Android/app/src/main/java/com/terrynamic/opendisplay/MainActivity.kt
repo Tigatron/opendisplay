@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -120,6 +121,14 @@ class MainActivity : ComponentActivity() {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             controller.show(WindowInsetsCompat.Type.systemBars())
         }
+        applySustainedPerformance(streaming)
+    }
+
+    private fun applySustainedPerformance(streaming: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        if (!pm.isSustainedPerformanceModeSupported) return
+        window.setSustainedPerformanceMode(streaming)
     }
 
     private fun requestNotifyPermission() {

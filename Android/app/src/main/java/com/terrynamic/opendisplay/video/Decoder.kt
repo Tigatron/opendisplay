@@ -8,7 +8,9 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
 import android.view.Surface
+import com.terrynamic.opendisplay.protocol.TelemetryPrefixParser
 import com.terrynamic.opendisplay.protocol.WireProtocol
+import com.terrynamic.opendisplay.transport.TransportBuffering
 import java.nio.ByteBuffer
 import java.util.ArrayDeque
 import java.util.concurrent.CountDownLatch
@@ -16,10 +18,18 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
+data class RenderedFrame(
+    val arrivedElapsedMs: Long,
+    val queuedElapsedMs: Long,
+    val renderedElapsedMs: Long,
+    val renderedWallMs: Long,
+    val capMs: Long?,
+)
+
 class Decoder(
     private val onVideoSize: (width: Int, height: Int) -> Unit,
     private val onNeedKeyframe: (reason: String?) -> Unit,
-    private val onRendered: (decodeMs: Long) -> Unit = {},
+    private val onRendered: (RenderedFrame) -> Unit = {},
     private val onConfigured: (width: Int, height: Int) -> Unit = { _, _ -> },
 ) {
     private val callbackThread = HandlerThread("od-decoder").apply { start() }
@@ -43,10 +53,17 @@ class Decoder(
     private val stalls = AtomicInteger(0)
     private val drops = AtomicInteger(0)
     private val freeInputs = ArrayDeque<Int>()
+    private val inFlight = ArrayDeque<QueuedAu>()
+    @Volatile
+    private var maxQueueFrames = TransportBuffering.WIFI_QUEUE_FRAMES
 
     val queuedFrames: Int get() = synchronized(lock) { queue.size }
     val stallCount: Int get() = stalls.get()
     val dropCount: Int get() = drops.get()
+
+    fun setQueueDepth(frames: Int) {
+        maxQueueFrames = frames.coerceAtLeast(1)
+    }
 
     fun attachSurface(newSurface: Surface?) {
         handler.post {
@@ -96,6 +113,7 @@ class Decoder(
             queue.clear()
             queuedBytes = 0
             droppingUntilIdr = false
+            inFlight.clear()
         }
         stopCodecLocked()
         sps = null
@@ -157,6 +175,7 @@ class Decoder(
 
         val video = if (scan.firstStartCode == 0) payload else payload.copyOfRange(scan.firstStartCode, payload.size)
         val isIdr = scan.hasIdr
+        val telemetry = TelemetryPrefixParser.parse(payload, scan.firstStartCode)
         val overflow = synchronized(lock) {
             if (droppingUntilIdr && !isIdr) {
                 drops.incrementAndGet()
@@ -167,7 +186,8 @@ class Decoder(
                 queuedBytes = 0
                 droppingUntilIdr = false
             }
-            val wouldOverflow = queue.size >= MAX_FRAMES || queuedBytes + video.size > MAX_BYTES
+            val wouldOverflow = queue.size >= maxQueueFrames ||
+                queuedBytes + video.size > TransportBuffering.QUEUE_BYTES_CAP
             if (wouldOverflow && !isIdr) {
                 queue.clear()
                 queuedBytes = 0
@@ -179,7 +199,14 @@ class Decoder(
                     queue.clear()
                     queuedBytes = 0
                 }
-                queue.addLast(QueuedAu(video, isIdr, android.os.SystemClock.elapsedRealtime()))
+                queue.addLast(
+                    QueuedAu(
+                        bytes = video,
+                        isIdr = isIdr,
+                        arrivedElapsedMs = android.os.SystemClock.elapsedRealtime(),
+                        capMs = telemetry?.capMs,
+                    ),
+                )
                 queuedBytes += video.size
                 false
             }
@@ -263,7 +290,17 @@ class Decoder(
             }
             try {
                 codec.releaseOutputBuffer(index, true)
-                onRendered(info.presentationTimeUs)
+                val au = synchronized(lock) { if (inFlight.isNotEmpty()) inFlight.removeFirst() else null }
+                val nowElapsed = android.os.SystemClock.elapsedRealtime()
+                onRendered(
+                    RenderedFrame(
+                        arrivedElapsedMs = au?.arrivedElapsedMs ?: nowElapsed,
+                        queuedElapsedMs = au?.queuedElapsedMs ?: nowElapsed,
+                        renderedElapsedMs = nowElapsed,
+                        renderedWallMs = System.currentTimeMillis(),
+                        capMs = au?.capMs,
+                    ),
+                )
             } catch (e: Exception) {
                 Log.e(WireProtocol.LOG_TAG, "output release failed: ${e.message}", e)
                 rebuild("output error")
@@ -321,7 +358,9 @@ class Decoder(
                 }
                 buffer.put(au.bytes)
                 val pts = presentationIndex++ * 16_667L
+                au.queuedElapsedMs = android.os.SystemClock.elapsedRealtime()
                 current.queueInputBuffer(index, 0, au.bytes.size, pts, 0)
+                synchronized(lock) { inFlight.addLast(au) }
                 if (au.isIdr && awaitingIdr) {
                     awaitingIdr = false
                     Log.i(WireProtocol.LOG_TAG, "decoder synchronized on IDR")
@@ -348,6 +387,7 @@ class Decoder(
         codec = null
         configured = false
         freeInputs.clear()
+        synchronized(lock) { inFlight.clear() }
         if (current != null) {
             try {
                 current.stop()
@@ -377,12 +417,12 @@ class Decoder(
     private data class QueuedAu(
         val bytes: ByteArray,
         val isIdr: Boolean,
-        val enqueuedAtMs: Long,
+        val arrivedElapsedMs: Long,
+        val capMs: Long?,
+        var queuedElapsedMs: Long = 0,
     )
 
     companion object {
-        private const val MAX_FRAMES = 8
-        private const val MAX_BYTES = 12 * 1024 * 1024
         private val START_CODE = byteArrayOf(0, 0, 0, 1)
 
         private fun withStartCode(nalu: ByteArray): ByteArray {

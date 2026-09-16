@@ -35,6 +35,10 @@ data class UiState(
     val statsText: String? = null,
     val videoWidth: Int = 0,
     val videoHeight: Int = 0,
+    val helloWide: Int = 0,
+    val helloHigh: Int = 0,
+    val desktopPtWide: Int = 0,
+    val desktopPtHigh: Int = 0,
     val cursor: CursorUi = CursorUi(),
     val updateMessage: String? = null,
     val settings: AppSettings = AppSettings(
@@ -42,6 +46,7 @@ data class UiState(
         decodeCeiling = com.terrynamic.opendisplay.video.DecodeCeiling.Auto,
         virtualDesktop = VirtualDesktopSize.P100,
         showStats = false,
+        cursorUdp = true,
     ),
     val senderTooOld: Boolean = false,
 )

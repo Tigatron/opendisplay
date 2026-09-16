@@ -11,6 +11,7 @@ class ClockOffset(
 
     private val samples = ArrayDeque<Sample>()
 
+    @Volatile
     var offsetMs: Double? = null
         private set
 

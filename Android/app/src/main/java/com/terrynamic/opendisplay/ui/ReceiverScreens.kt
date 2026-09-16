@@ -26,7 +26,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.terrynamic.opendisplay.AppSettings
 import com.terrynamic.opendisplay.ReceiverController
@@ -88,6 +90,8 @@ private fun IdleScreen(state: UiState, onOpenSettings: () -> Unit) {
         Meta("Install", state.installIdShort)
         Meta("Port", state.port.toString())
         Meta("USB helper", if (state.usbHelperActive) "active" else "inactive")
+        Meta("desktop", "${state.desktopPtWide}x${state.desktopPtHigh}pt")
+        Meta("stream", "${state.videoWidth}x${state.videoHeight}")
         if (state.senderTooOld) {
             Text("Update the Mac app to continue.", color = MaterialTheme.colorScheme.primary)
         }
@@ -119,16 +123,29 @@ private fun StreamingScreen(
             },
             modifier = Modifier.fillMaxSize(),
         )
+        Text(
+            text = "desktop ${state.desktopPtWide}x${state.desktopPtHigh}pt   stream ${state.videoWidth}x${state.videoHeight}",
+            color = Color.White.copy(alpha = 0.85f),
+            fontFamily = FontFamily.Monospace,
+            fontSize = 11.sp,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(12.dp)
+                .background(Color(0x66000000))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+        )
         if (state.showStats && state.statsText != null) {
             Text(
                 text = state.statsText,
                 color = Color.White,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+                lineHeight = 14.sp,
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(12.dp)
                     .background(Color(0x99000000))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                style = MaterialTheme.typography.bodySmall,
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
             )
         }
         TextButton(
@@ -161,6 +178,7 @@ private fun SettingsSheet(
     var ceiling by remember { mutableStateOf(settings.decodeCeiling) }
     var desktop by remember { mutableStateOf(settings.virtualDesktop) }
     var stats by remember { mutableStateOf(settings.showStats) }
+    var cursorUdp by remember { mutableStateOf(settings.cursorUdp) }
     var customW by remember {
         mutableStateOf((settings.decodeCeiling as? DecodeCeiling.Custom)?.width?.toString() ?: "2560")
     }
@@ -173,6 +191,7 @@ private fun SettingsSheet(
         ceiling = settings.decodeCeiling
         desktop = settings.virtualDesktop
         stats = settings.showStats
+        cursorUdp = settings.cursorUdp
     }
 
     Column(
@@ -233,6 +252,14 @@ private fun SettingsSheet(
             Text("Stats overlay")
             Switch(checked = stats, onCheckedChange = { stats = it })
         }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Cursor UDP")
+            Switch(checked = cursorUdp, onCheckedChange = { cursorUdp = it })
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(onClick = {
                 val resolvedCeiling = if (ceiling is DecodeCeiling.Custom) {
@@ -249,6 +276,7 @@ private fun SettingsSheet(
                         decodeCeiling = resolvedCeiling,
                         virtualDesktop = desktop,
                         showStats = stats,
+                        cursorUdp = cursorUdp,
                     ),
                 )
             }) { Text("Save") }

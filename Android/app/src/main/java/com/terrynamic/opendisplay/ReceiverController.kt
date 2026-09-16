@@ -11,10 +11,13 @@ import com.terrynamic.opendisplay.link.LinkPolicy
 import com.terrynamic.opendisplay.protocol.ClockOffset
 import com.terrynamic.opendisplay.protocol.ControlMessages
 import com.terrynamic.opendisplay.protocol.InboundControl
+import com.terrynamic.opendisplay.protocol.LatencyStats
 import com.terrynamic.opendisplay.protocol.PanelReadyGate
 import com.terrynamic.opendisplay.protocol.SenderHealth
+import com.terrynamic.opendisplay.protocol.StatsSnapshot
 import com.terrynamic.opendisplay.protocol.WireMessage
 import com.terrynamic.opendisplay.protocol.WireProtocol
+import com.terrynamic.opendisplay.transport.TransportBuffering
 import com.terrynamic.opendisplay.service.NsdAdvertiser
 import com.terrynamic.opendisplay.transport.Demux
 import com.terrynamic.opendisplay.transport.FrameKind
@@ -51,10 +54,22 @@ class ReceiverController(private val app: Application) {
     private val decoder = Decoder(
         onVideoSize = { w, h ->
             _state.update { it.copy(videoWidth = w, videoHeight = h) }
+            handler.post { publishOverlay() }
         },
         onNeedKeyframe = { reason -> handler.post { requestKeyframe(reason) } },
-        onRendered = { _ ->
+        onRendered = { frame ->
             framesThisWindow.incrementAndGet()
+            val offset = clock.offsetMs
+            val e2e = if (frame.capMs != null && offset != null) {
+                frame.renderedWallMs - (frame.capMs - offset)
+            } else {
+                null
+            }
+            latency.record(
+                e2eMs = e2e,
+                phMs = (frame.renderedElapsedMs - frame.arrivedElapsedMs).toDouble(),
+                decMs = (frame.renderedElapsedMs - frame.queuedElapsedMs).toDouble(),
+            )
         },
         onConfigured = { w, h ->
             Log.i(WireProtocol.LOG_TAG, "decoder configured / waiting for IDR ${w}x${h}")
@@ -73,7 +88,8 @@ class ReceiverController(private val app: Application) {
     private var windowStartMs = 0L
     private val framesThisWindow = AtomicInteger(0)
     private val bytesThisWindow = AtomicLong(0)
-    private val decodeSamples = ArrayDeque<Double>()
+    private val latency = LatencyStats()
+    private var lastOverlay = StatsSnapshot(transport = "wifi")
     private var senderHealth: SenderHealth? = null
     private var listeningEnabled = false
     private var asleep = false
@@ -172,6 +188,7 @@ class ReceiverController(private val app: Application) {
         handler.post {
             val changed = panel.update(width, height, scale, smallestWidthDp)
             if (!panel.isReady) return@post
+            refreshAnnouncedGeometry()
             maybeStartListenerLocked()
             if (changed && listener?.liveConnection != null) {
                 sendHello()
@@ -200,20 +217,37 @@ class ReceiverController(private val app: Application) {
     }
 
     fun updateSettings(settings: AppSettings) {
+        handler.post { applySettingsLocked(settings) }
+    }
+
+    fun applyShellPatch(patch: SettingsPatch): Boolean {
+        if (patch.isEmpty) return false
         handler.post {
-            store.save(settings)
-            val renamed = settings.serviceName != _state.value.serviceName
-            _state.update {
-                it.copy(
-                    settings = settings,
-                    serviceName = settings.serviceName,
-                    showStats = settings.showStats,
-                )
-            }
-            if (renamed && listeningEnabled && !asleep) {
-                nsd.rename(settings.serviceName)
-            }
-            if (listener?.liveConnection != null) sendHello()
+            applySettingsLocked(patch.applyTo(store.load()))
+        }
+        return true
+    }
+
+    private fun applySettingsLocked(settings: AppSettings) {
+        val previous = _state.value.settings
+        store.save(settings)
+        val renamed = settings.serviceName != previous.serviceName
+        val helloChanged = settings.decodeCeiling != previous.decodeCeiling ||
+            settings.virtualDesktop != previous.virtualDesktop
+        _state.update {
+            it.copy(
+                settings = settings,
+                serviceName = settings.serviceName,
+                showStats = settings.showStats,
+            )
+        }
+        refreshAnnouncedGeometry()
+        publishOverlay()
+        if (renamed && listeningEnabled && !asleep) {
+            nsd.rename(settings.serviceName)
+        }
+        if (helloChanged && listener?.liveConnection != null) {
+            sendHello()
         }
     }
 
@@ -245,11 +279,17 @@ class ReceiverController(private val app: Application) {
         val factor = settings.virtualDesktop.factor
         val wide = even((panel.wide * factor).roundToInt())
         val high = even((panel.high * factor).roundToInt())
-        val ceiling = DecodeCeilingResolver.resolve(settings.decodeCeiling, panel.wide, panel.high)
+        val ceiling = DecodeCeilingResolver.resolve(
+            settings.decodeCeiling,
+            panel.wide,
+            panel.high,
+            settings.virtualDesktop.factor,
+        )
         val addrs = linkPolicy.addrs()
         lastHelloWide = wide
         lastHelloHigh = high
         lastAdvertisedAddrs = addrs
+        publishAnnouncedGeometry(wide, high)
         return ControlMessages.hello(
             pixelsWide = wide,
             pixelsHigh = high,
@@ -337,9 +377,11 @@ class ReceiverController(private val app: Application) {
         sessionGeneration = generation
         lastCursorSeq = 0
         clock.reset()
+        latency.reset()
         kfThrottle.invalidateAll()
         unknownTypes.clear()
         decoder.reset()
+        decoder.setQueueDepth(TransportBuffering.queueFrames(transport))
         resetCursor()
         lastPingAt = 0
         lastStatsAt = 0
@@ -347,6 +389,8 @@ class ReceiverController(private val app: Application) {
         framesThisWindow.set(0)
         bytesThisWindow.set(0)
         senderHealth = null
+        lastOverlay = StatsSnapshot(transport = transport)
+        publishOverlay()
         _state.update {
             it.copy(
                 phase = if (it.updateMessage != null) ReceiverPhase.BLOCKED else ReceiverPhase.STREAMING,
@@ -468,10 +512,14 @@ class ReceiverController(private val app: Application) {
     private fun sendHello() {
         val json = helloJson()
         listener?.sendControl(OutboundKind.HELLO, json)
-        Log.i(
-            WireProtocol.LOG_TAG,
-            "hello sent ${json.optInt("pixelsWide")}x${json.optInt("pixelsHigh")}",
-        )
+        val wide = json.optInt("pixelsWide")
+        val high = json.optInt("pixelsHigh")
+        val encodeW = json.optInt("maxEncodeWide", -1)
+        val encodeH = json.optInt("maxEncodeHigh", -1)
+        Log.i(WireProtocol.LOG_TAG, "hello sent ${wide}x${high}")
+        if (encodeW > 0 && encodeH > 0 && (encodeW < wide || encodeH < high)) {
+            Log.i(WireProtocol.LOG_TAG, "stream capped at ${encodeW}x${encodeH}")
+        }
     }
 
     private fun sendStats() {
@@ -482,23 +530,98 @@ class ReceiverController(private val app: Application) {
         windowStartMs = now
         val fps = frames / elapsed
         val mbps = (bytes * 8.0) / elapsed / 1_000_000.0
-        val dec50 = decodeSamples.sorted().let { if (it.isEmpty()) 0.0 else it[it.size / 2] }
+        val offsetKnown = clock.offsetMs != null
+        val latencySnap = latency.snapshot(offsetKnown)
         val transport = _state.value.transport ?: "wifi"
-        val text = "fps=${"%.1f".format(fps)}  mbps=${"%.2f".format(mbps)}  " +
-            "q=${decoder.queuedFrames}  drops=${decoder.dropCount}  $transport"
-        _state.update { it.copy(statsText = text) }
+        val health = senderHealth
+        val state = _state.value
+        lastOverlay = StatsSnapshot(
+            transport = transport,
+            fps = fps,
+            mbps = mbps,
+            e2e50 = latencySnap.e2e50,
+            e2e95 = latencySnap.e2e95,
+            ph50 = latencySnap.ph50,
+            ph95 = latencySnap.ph95,
+            dec50 = latencySnap.dec50,
+            stalls = decoder.stallCount,
+            queue = decoder.queuedFrames,
+            drops = decoder.dropCount,
+            offsetKnown = offsetKnown,
+            streamWide = state.videoWidth,
+            streamHigh = state.videoHeight,
+            desktopPtWide = state.desktopPtWide,
+            desktopPtHigh = state.desktopPtHigh,
+            capFps = health?.capFps,
+            encDrops = health?.encDrops,
+            netDrops = health?.netDrops,
+            pending = health?.pending,
+        )
+        publishOverlay()
+        Log.i(
+            WireProtocol.LOG_TAG,
+            "stats transport=$transport fps=${"%.1f".format(fps)} mbps=${"%.2f".format(mbps)} " +
+                "offsetKnown=$offsetKnown e2e50=${latencySnap.e2e50} e2e95=${latencySnap.e2e95}",
+        )
         listener?.sendControl(
             OutboundKind.STATS,
             ControlMessages.stats(
                 transport = transport,
                 fps = fps,
                 mbps = mbps,
-                dec50 = dec50,
+                ph50 = latencySnap.ph50,
+                ph95 = latencySnap.ph95,
+                dec50 = latencySnap.dec50,
                 stalls = decoder.stallCount,
                 queue = decoder.queuedFrames,
                 drops = decoder.dropCount,
+                offsetKnown = offsetKnown,
+                e2e50 = latencySnap.e2e50,
+                e2e95 = latencySnap.e2e95,
             ),
         )
+    }
+
+    private fun refreshAnnouncedGeometry() {
+        if (!panel.isReady) return
+        val factor = _state.value.settings.virtualDesktop.factor
+        val wide = even((panel.wide * factor).roundToInt())
+        val high = even((panel.high * factor).roundToInt())
+        publishAnnouncedGeometry(wide, high)
+    }
+
+    private fun publishAnnouncedGeometry(wide: Int, high: Int) {
+        _state.update {
+            it.copy(
+                helloWide = wide,
+                helloHigh = high,
+                desktopPtWide = wide / 2,
+                desktopPtHigh = high / 2,
+            )
+        }
+        lastOverlay = lastOverlay.copy(
+            desktopPtWide = wide / 2,
+            desktopPtHigh = high / 2,
+            streamWide = _state.value.videoWidth,
+            streamHigh = _state.value.videoHeight,
+        )
+    }
+
+    private fun publishOverlay() {
+        val state = _state.value
+        val overlay = lastOverlay.copy(
+            transport = state.transport ?: lastOverlay.transport,
+            streamWide = state.videoWidth,
+            streamHigh = state.videoHeight,
+            desktopPtWide = state.desktopPtWide,
+            desktopPtHigh = state.desktopPtHigh,
+            capFps = senderHealth?.capFps ?: lastOverlay.capFps,
+            encDrops = senderHealth?.encDrops ?: lastOverlay.encDrops,
+            netDrops = senderHealth?.netDrops ?: lastOverlay.netDrops,
+            pending = senderHealth?.pending ?: lastOverlay.pending,
+        )
+        lastOverlay = overlay
+        _state.update { it.copy(statsText = overlay.overlayText()) }
     }
 
     private fun resetCursor() {

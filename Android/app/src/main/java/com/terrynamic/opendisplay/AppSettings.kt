@@ -21,6 +21,7 @@ data class AppSettings(
     val decodeCeiling: DecodeCeiling,
     val virtualDesktop: VirtualDesktopSize,
     val showStats: Boolean,
+    val cursorUdp: Boolean = true,
 )
 
 class SettingsStore(context: Context) {
@@ -34,6 +35,7 @@ class SettingsStore(context: Context) {
         decodeCeiling = DecodeCeiling.fromStorage(prefs.getString(KEY_CEILING, null)),
         virtualDesktop = VirtualDesktopSize.fromStorage(prefs.getString(KEY_DESKTOP, null)),
         showStats = prefs.getBoolean(KEY_STATS, false),
+        cursorUdp = prefs.getBoolean(KEY_CURSOR_UDP, true),
     )
 
     fun save(settings: AppSettings) {
@@ -42,6 +44,7 @@ class SettingsStore(context: Context) {
             .putString(KEY_CEILING, settings.decodeCeiling.storageKey)
             .putString(KEY_DESKTOP, settings.virtualDesktop.storageKey)
             .putBoolean(KEY_STATS, settings.showStats)
+            .putBoolean(KEY_CURSOR_UDP, settings.cursorUdp)
             .apply()
     }
 
@@ -51,6 +54,7 @@ class SettingsStore(context: Context) {
         private const val KEY_CEILING = "decodeCeiling"
         private const val KEY_DESKTOP = "virtualDesktop"
         private const val KEY_STATS = "showStats"
+        private const val KEY_CURSOR_UDP = "cursorUdp"
     }
 }
 

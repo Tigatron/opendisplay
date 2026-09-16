@@ -62,19 +62,33 @@ object ControlMessages {
         transport: String,
         fps: Double,
         mbps: Double,
+        ph50: Double,
+        ph95: Double,
         dec50: Double,
         stalls: Int,
         queue: Int,
         drops: Int,
+        offsetKnown: Boolean,
+        e2e50: Double? = null,
+        e2e95: Double? = null,
     ): JSONObject = JSONObject()
         .put("type", WireMessage.STATS)
         .put("transport", transport)
         .put("fps", fps)
         .put("mbps", mbps)
+        .put("ph50", ph50)
+        .put("ph95", ph95)
         .put("dec50", dec50)
         .put("stalls", stalls)
         .put("queue", queue)
         .put("drops", drops)
+        .put("offsetKnown", offsetKnown)
+        .also { json ->
+            if (offsetKnown && e2e50 != null && e2e95 != null) {
+                json.put("e2e50", e2e50)
+                json.put("e2e95", e2e95)
+            }
+        }
 
     fun sleeping(): JSONObject = JSONObject().put("type", WireMessage.SLEEPING)
 

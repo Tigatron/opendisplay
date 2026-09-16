@@ -56,12 +56,29 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## Settings
 
-| Setting | Meaning |
-|---|---|
-| Service name | Bonjour instance name (persisted). NSD may suffix it on collision. |
-| Decode ceiling | Advertised as `hello.maxEncodeWide/High`. Auto / Panel / 1920x1080 / Custom / Off. Off omits the fields. Auto is the largest of the panel size and MediaCodec 60 fps performance points (API 29+; falls back to Panel). |
-| Virtual desktop | `hello.pixelsWide/High` = physical pixels × 100/125/150%, rounded even. The ceiling keeps the encoded stream at or below what the panel/decoder can sustain. |
-| Stats overlay | Local fps / mbps / queue text while streaming. |
+| Setting | Meaning | `content update` value |
+|---|---|---|
+| Service name | Bonjour instance name (persisted). NSD may suffix it on collision. | `serviceName` string |
+| Decode ceiling | Advertised as `hello.maxEncodeWide/High`. Auto / Panel / 1920x1080 / Custom / Off. Off omits the fields. Auto is the largest of the panel size and MediaCodec 60 fps performance points (API 29+; falls back to Panel). When virtual desktop > 100% and ceiling is Auto/Panel, `maxEncode*` is exactly the physical panel. | `auto`, `panel`, `off`, or `<W>x<H>` |
+| Virtual desktop | `hello.pixelsWide/High` = physical pixels × 100/125/150%, rounded even. Idle/streaming UI shows `desktop <W>x<H>pt` (hello pixels / 2) and `stream <W>x<H>` (SPS). | `100`, `125`, `150` |
+| Stats overlay | Monospace overlay (default off): transport, fps, mbps, e2e50/95, ph50, dec50, queue, stream, desktop, plus sender `capFps`/`encDrops`/`netDrops`/`pending`. | `0` or `1` |
+| Cursor UDP | Reserved for the UDP cursor side channel (default on). | `0` or `1` |
+
+`InfoProvider.update` is honored only for `Binder` uid `2000` (`SHELL_UID`) or `0`. Other callers are logged and rejected. Applying a hello-relevant key re-sends `hello` on the live session; `statsOverlay` toggles immediately.
+
+```bash
+# Query current settings
+adb shell content query --uri content://com.terrynamic.opendisplay.info
+
+# Cap the encoded stream at 1080p (live re-hello)
+adb shell content update --uri content://com.terrynamic.opendisplay.info --bind decodeCeiling:s:1920x1080
+
+# Other keys
+adb shell content update --uri content://com.terrynamic.opendisplay.info --bind virtualDesktop:s:150
+adb shell content update --uri content://com.terrynamic.opendisplay.info --bind statsOverlay:s:1
+adb shell content update --uri content://com.terrynamic.opendisplay.info --bind cursorUdp:s:0
+adb shell content update --uri content://com.terrynamic.opendisplay.info --bind serviceName:s:BUILD.TERRYNAMIC
+```
 
 ## Protocol alignment
 

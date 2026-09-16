@@ -57,6 +57,8 @@ class ReceiverListener(
         val serverSocket = ServerSocket().apply {
             reuseAddress = true
             bind(InetSocketAddress("0.0.0.0", port), 8)
+            // Inherited by accepted sockets; see TransportBuffering.
+            receiveBufferSize = TransportBuffering.LISTEN_RECEIVE_BUFFER
         }
         server = serverSocket
         acceptThread = Thread({ acceptLoop(serverSocket) }, "od-accept").apply {

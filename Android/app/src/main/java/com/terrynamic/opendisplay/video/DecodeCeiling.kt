@@ -24,6 +24,16 @@ sealed class DecodeCeiling {
             Off -> "off"
         }
 
+    /** Shell / query wire form: `auto|panel|off|<W>x<H>`. */
+    val wireKey: String
+        get() = when (this) {
+            Auto -> "auto"
+            Panel -> "panel"
+            Fhd -> "1920x1080"
+            is Custom -> "${width}x${height}"
+            Off -> "off"
+        }
+
     companion object {
         fun fromStorage(value: String?): DecodeCeiling {
             if (value.isNullOrBlank()) return Auto
@@ -36,7 +46,7 @@ sealed class DecodeCeiling {
             }
             return when (value) {
                 "panel" -> Panel
-                "fhd" -> Fhd
+                "fhd", "1920x1080" -> Fhd
                 "off" -> Off
                 else -> Auto
             }
@@ -47,18 +57,34 @@ sealed class DecodeCeiling {
 data class EncodeLimit(val wide: Int, val high: Int)
 
 object DecodeCeilingResolver {
-    fun resolve(ceiling: DecodeCeiling, panelWide: Int, panelHigh: Int): EncodeLimit? {
+    /**
+     * When the virtual desktop is larger than the panel (`desktopFactor > 1`)
+     * and the ceiling is Auto/Panel, advertise exactly the physical panel so
+     * the sender keeps a larger desktop while encoding at a size the panel
+     * can sustain.
+     */
+    fun resolve(
+        ceiling: DecodeCeiling,
+        panelWide: Int,
+        panelHigh: Int,
+        desktopFactor: Float = 1f,
+    ): EncodeLimit? {
         val panel = even(panelWide) to even(panelHigh)
+        val enlargeDesktop = desktopFactor > 1f
         return when (ceiling) {
             DecodeCeiling.Off -> null
             DecodeCeiling.Panel -> EncodeLimit(panel.first, panel.second)
             DecodeCeiling.Fhd -> EncodeLimit(1920, 1080)
             is DecodeCeiling.Custom -> EncodeLimit(even(ceiling.width), even(ceiling.height))
             DecodeCeiling.Auto -> {
-                val best = largestSixtyFpsPoint()
-                val wide = max(panel.first, best?.first ?: 0)
-                val high = max(panel.second, best?.second ?: 0)
-                EncodeLimit(even(wide), even(high))
+                if (enlargeDesktop) {
+                    EncodeLimit(panel.first, panel.second)
+                } else {
+                    val best = largestSixtyFpsPoint()
+                    val wide = max(panel.first, best?.first ?: 0)
+                    val high = max(panel.second, best?.second ?: 0)
+                    EncodeLimit(even(wide), even(high))
+                }
             }
         }
     }

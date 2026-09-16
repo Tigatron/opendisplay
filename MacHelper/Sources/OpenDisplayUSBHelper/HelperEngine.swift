@@ -86,6 +86,11 @@ final class HelperEngine: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             let adbChanged = snapshot.adbPathOverride != self.settings.adbPathOverride
+            if snapshot != self.settings {
+                for line in SettingsChangeLog.lines(from: self.settings, to: snapshot) {
+                    self.log.info(line)
+                }
+            }
             self.settings = snapshot
             if adbChanged {
                 self.log.info("adb override changed — restarting tracker")
@@ -398,11 +403,11 @@ final class HelperEngine: @unchecked Sendable {
         hooks.stopHeartbeat = { [weak self, weak slot] in
             self?.queue.async { self?.stopHeartbeat(slot) }
         }
-        hooks.writeDefaults = {
-            OpenDisplayDefaults.writeTunnel()
+        hooks.writeDefaults = { [weak self] trigger in
+            OpenDisplayDefaults.writeTunnel(trigger: trigger, log: { self?.log.info($0) })
         }
-        hooks.revertDefaults = {
-            OpenDisplayDefaults.revertTunnel()
+        hooks.revertDefaults = { [weak self] trigger in
+            OpenDisplayDefaults.revertTunnel(trigger: trigger, log: { self?.log.info($0) })
         }
         return DeviceTunnel(
             device: device,
@@ -438,12 +443,14 @@ final class HelperEngine: @unchecked Sendable {
         let revertDefaults = slot.tunnel?.state.wroteDefaults == true
         let client = cachedClient(path: adbPath)
         let deviceSerial = slot.serial
+        let defaultsTrigger: OpenDisplayDefaultsTrigger = waitForIO ? .quit : .tunnelDown
+        let log = self.log
         let ioWork = {
             if let port {
                 client?.removeForward(serial: deviceSerial, localPort: port)
             }
             if revertDefaults {
-                OpenDisplayDefaults.revertTunnel()
+                OpenDisplayDefaults.revertTunnel(trigger: defaultsTrigger, log: { log.info($0) })
             }
         }
         if waitForIO {

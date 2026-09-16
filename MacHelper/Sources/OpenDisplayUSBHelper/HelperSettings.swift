@@ -114,6 +114,10 @@ final class HelperSettings: ObservableObject {
             || nextWrite != writeOpenDisplayDefaults
         guard loginChanged || otherChanged else { return false }
 
+        if loginChanged {
+            HelperLogger.shared.info(SettingsChangeLog.line(key: Keys.startAtLogin, value: nextLogin))
+        }
+
         applyingExternal = true
         adbPathOverride = nextOverride
         launchReceiverOnAttach = nextLaunch

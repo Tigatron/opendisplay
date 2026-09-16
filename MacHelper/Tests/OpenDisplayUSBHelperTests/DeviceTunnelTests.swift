@@ -233,8 +233,8 @@ final class DeviceTunnelTests: XCTestCase {
             log.events.append("heartbeat on \(serial):\(local)")
         }
         hooks.stopHeartbeat = { log.events.append("heartbeat off") }
-        hooks.writeDefaults = { log.events.append("write defaults") }
-        hooks.revertDefaults = { log.events.append("revert defaults") }
+        hooks.writeDefaults = { _ in log.events.append("write defaults") }
+        hooks.revertDefaults = { _ in log.events.append("revert defaults") }
         tunnel.hooks = hooks
         return tunnel
     }

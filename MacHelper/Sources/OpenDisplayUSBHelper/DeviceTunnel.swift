@@ -53,8 +53,8 @@ struct TunnelHooks {
     var withdraw: () -> Void = {}
     var startHeartbeat: (String, UInt16) -> Void = { _, _ in }
     var stopHeartbeat: () -> Void = {}
-    var writeDefaults: () -> Void = {}
-    var revertDefaults: () -> Void = {}
+    var writeDefaults: (OpenDisplayDefaultsTrigger) -> Void = { _ in }
+    var revertDefaults: (OpenDisplayDefaultsTrigger) -> Void = { _ in }
 }
 
 /// Linear attach pipeline. All I/O is injected so unit tests never touch adb
@@ -212,11 +212,11 @@ final class DeviceTunnel {
             state.heartbeatOn = false
         }
         if action.writeDefaults {
-            hooks.writeDefaults()
+            hooks.writeDefaults(.settingEnabled)
             state.wroteDefaults = true
         }
         if action.revertDefaults {
-            hooks.revertDefaults()
+            hooks.revertDefaults(.settingDisabled)
             state.wroteDefaults = false
         }
     }
@@ -228,7 +228,7 @@ final class DeviceTunnel {
             hooks.removeForward(state.serial, port)
         }
         if state.wroteDefaults {
-            hooks.revertDefaults()
+            hooks.revertDefaults(.tunnelDown)
         }
         state.phase = keepRowPhase
         state.tunnelPort = nil
@@ -292,7 +292,7 @@ final class DeviceTunnel {
                     state.heartbeatOn = true
                 }
                 if settings.writeOpenDisplayDefaults {
-                    hooks.writeDefaults()
+                    hooks.writeDefaults(.tunnelReady)
                     state.wroteDefaults = true
                 }
             }
@@ -314,7 +314,7 @@ final class DeviceTunnel {
             hooks.removeForward(state.serial, port)
         }
         if state.wroteDefaults {
-            hooks.revertDefaults()
+            hooks.revertDefaults(.tunnelDown)
             state.wroteDefaults = false
         }
         state.phase = .failed

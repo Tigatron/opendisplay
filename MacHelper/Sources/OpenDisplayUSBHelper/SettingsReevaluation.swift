@@ -36,3 +36,26 @@ enum SettingsReevaluation {
         return action
     }
 }
+
+enum SettingsChangeLog {
+    static func line(key: String, value: Any) -> String {
+        "settings changed: \(key)=\(value)"
+    }
+
+    static func lines(from old: SettingsSnapshot, to new: SettingsSnapshot) -> [String] {
+        var lines: [String] = []
+        if old.adbPathOverride != new.adbPathOverride {
+            lines.append(line(key: HelperSettings.Keys.adbPathOverride, value: new.adbPathOverride))
+        }
+        if old.launchReceiverOnAttach != new.launchReceiverOnAttach {
+            lines.append(line(key: HelperSettings.Keys.launchReceiverOnAttach, value: new.launchReceiverOnAttach))
+        }
+        if old.sendHeartbeat != new.sendHeartbeat {
+            lines.append(line(key: HelperSettings.Keys.sendHeartbeat, value: new.sendHeartbeat))
+        }
+        if old.writeOpenDisplayDefaults != new.writeOpenDisplayDefaults {
+            lines.append(line(key: HelperSettings.Keys.writeOpenDisplayDefaults, value: new.writeOpenDisplayDefaults))
+        }
+        return lines
+    }
+}

@@ -1,0 +1,492 @@
+package build.terrynamic.opendisplay
+
+import android.app.Application
+import android.graphics.BitmapFactory
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.SystemClock
+import android.util.Log
+import android.view.Surface
+import build.terrynamic.opendisplay.link.LinkPolicy
+import build.terrynamic.opendisplay.protocol.ClockOffset
+import build.terrynamic.opendisplay.protocol.ControlMessages
+import build.terrynamic.opendisplay.protocol.InboundControl
+import build.terrynamic.opendisplay.protocol.SenderHealth
+import build.terrynamic.opendisplay.protocol.WireMessage
+import build.terrynamic.opendisplay.protocol.WireProtocol
+import build.terrynamic.opendisplay.service.NsdAdvertiser
+import build.terrynamic.opendisplay.transport.Demux
+import build.terrynamic.opendisplay.transport.FrameKind
+import build.terrynamic.opendisplay.transport.FramedConnection
+import build.terrynamic.opendisplay.transport.OutboundKind
+import build.terrynamic.opendisplay.transport.OutboundMessage
+import build.terrynamic.opendisplay.transport.ReceiverListener
+import build.terrynamic.opendisplay.video.DecodeCeilingResolver
+import build.terrynamic.opendisplay.video.Decoder
+import build.terrynamic.opendisplay.video.KeyframeRequestAction
+import build.terrynamic.opendisplay.video.KeyframeRequestThrottle
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.roundToInt
+
+class ReceiverController(private val app: Application) {
+    private val store = SettingsStore(app)
+    private val installId = InstallId.get(app)
+    private val controlThread = HandlerThread("od-control").apply { start() }
+    private val handler = Handler(controlThread.looper)
+    private val linkPolicy = LinkPolicy()
+    private val clock = ClockOffset()
+    private val kfThrottle = KeyframeRequestThrottle()
+    private val unknownTypes = mutableSetOf<String>()
+    private val nsd = NsdAdvertiser(app) { name ->
+        handler.post { _state.update { it.copy(registeredName = name) } }
+    }
+
+    private val decoder = Decoder(
+        onVideoSize = { w, h ->
+            _state.update { it.copy(videoWidth = w, videoHeight = h) }
+        },
+        onNeedKeyframe = { reason -> handler.post { requestKeyframe(reason) } },
+        onRendered = { _ ->
+            framesThisWindow.incrementAndGet()
+        },
+        onConfigured = { w, h ->
+            Log.i(WireProtocol.LOG_TAG, "decoder configured / waiting for IDR ${w}x${h}")
+        },
+    )
+
+    private var listener: ReceiverListener? = null
+    private var sessionGeneration = 0L
+    private var lastCursorSeq = 0L
+    private var lastAdvertisedAddrs: List<String> = emptyList()
+    private var lastHelloWide = 0
+    private var lastHelloHigh = 0
+    private var panelWide = 1920
+    private var panelHigh = 1080
+    private var panelScale = 2f
+    private var smallestWidthDp = 600
+    private var lastPingAt = 0L
+    private var lastStatsAt = 0L
+    private var windowStartMs = 0L
+    private val framesThisWindow = AtomicInteger(0)
+    private val bytesThisWindow = AtomicLong(0)
+    private val decodeSamples = ArrayDeque<Double>()
+    private var senderHealth: SenderHealth? = null
+    private var listeningEnabled = false
+    private var asleep = false
+    private var stopped = false
+
+    private val _state = MutableStateFlow(
+        UiState(
+            installId = installId,
+            installIdShort = InstallId.shortId(installId),
+            settings = store.load(),
+            serviceName = store.load().serviceName,
+            registeredName = store.load().serviceName,
+            showStats = store.load().showStats,
+        ),
+    )
+    val uiState: StateFlow<UiState> = _state.asStateFlow()
+
+    val snapshot: UiState get() = _state.value
+
+    private val livenessTick = object : Runnable {
+        override fun run() {
+            if (!listeningEnabled || asleep) return
+            val now = SystemClock.elapsedRealtime()
+            if (listener?.liveConnection != null) {
+                if (now - lastPingAt >= WireProtocol.PING_INTERVAL_MS) {
+                    lastPingAt = now
+                    listener?.sendControl(
+                        OutboundKind.PING,
+                        ControlMessages.ping(System.currentTimeMillis().toDouble()),
+                    )
+                }
+                if (now - lastStatsAt >= WireProtocol.STATS_INTERVAL_MS) {
+                    lastStatsAt = now
+                    sendStats()
+                }
+                val link = linkPolicy.snapshot()
+                if (link.addrs != lastAdvertisedAddrs) {
+                    lastAdvertisedAddrs = link.addrs
+                    sendHello()
+                    _state.update { it.copy(usbHelperActive = link.helperActive) }
+                }
+            }
+            handler.postDelayed(this, 500)
+        }
+    }
+
+    fun startListening() {
+        handler.post {
+            if (stopped || asleep) return@post
+            listeningEnabled = true
+            if (listener != null) return@post
+            startListenerLocked()
+            handler.removeCallbacks(livenessTick)
+            handler.post(livenessTick)
+        }
+    }
+
+    fun sleepSession() {
+        handler.post {
+            asleep = true
+            listener?.sendControl(OutboundKind.SLEEPING, ControlMessages.sleeping())
+            stopListenerLocked(sendClosing = false)
+            _state.update { it.copy(status = "Sleeping — waiting for unlock", phase = ReceiverPhase.IDLE) }
+        }
+    }
+
+    fun resumeFromSleep() {
+        handler.post {
+            asleep = false
+            if (listeningEnabled) startListenerLocked()
+            _state.update { it.copy(status = "Listening on :${WireProtocol.DEFAULT_PORT}") }
+        }
+    }
+
+    fun shutdown(sendClosing: Boolean) {
+        handler.post {
+            if (stopped) return@post
+            stopped = true
+            listeningEnabled = false
+            asleep = false
+            if (sendClosing) {
+                listener?.sendControl(OutboundKind.CLOSING, ControlMessages.closing())
+            }
+            stopListenerLocked(sendClosing = false)
+            decoder.release()
+            nsd.stop()
+            controlThread.quitSafely()
+        }
+    }
+
+    fun updatePanel(width: Int, height: Int, scale: Float, smallestWidthDp: Int) {
+        handler.post {
+            if (width <= 0 || height <= 0) return@post
+            val changed = panelWide != width || panelHigh != height
+            panelWide = width
+            panelHigh = height
+            panelScale = scale
+            this.smallestWidthDp = smallestWidthDp
+            if (changed && listener?.liveConnection != null) {
+                sendHello()
+            }
+        }
+    }
+
+    fun attachSurface(surface: Surface?) {
+        decoder.attachSurface(surface)
+        if (surface != null) handler.post { requestKeyframe(null) }
+    }
+
+    fun sendTouch(phase: String, x: Double, y: Double) {
+        val t = clock.stampSenderClock(System.currentTimeMillis().toDouble())
+        val kind = when (phase) {
+            "moved" -> OutboundKind.TOUCH_MOVED
+            "ended" -> OutboundKind.TOUCH_ENDED
+            "cancelled" -> OutboundKind.TOUCH_CANCELLED
+            else -> OutboundKind.TOUCH_BEGAN
+        }
+        listener?.sendControl(kind, ControlMessages.touch(phase, x, y, t))
+    }
+
+    fun sendScroll(dx: Double, dy: Double) {
+        listener?.sendControl(OutboundKind.SCROLL, ControlMessages.scroll(dx, dy))
+    }
+
+    fun updateSettings(settings: AppSettings) {
+        handler.post {
+            store.save(settings)
+            val renamed = settings.serviceName != _state.value.serviceName
+            _state.update {
+                it.copy(
+                    settings = settings,
+                    serviceName = settings.serviceName,
+                    showStats = settings.showStats,
+                )
+            }
+            if (renamed && listeningEnabled && !asleep) {
+                nsd.rename(settings.serviceName)
+            }
+            if (listener?.liveConnection != null) sendHello()
+        }
+    }
+
+    fun onHelperHeartbeat(port: Int, helperVersion: String?, ttlMs: Int) {
+        handler.post {
+            val changed = linkPolicy.onHeartbeat(port, helperVersion, ttlMs)
+            val snap = linkPolicy.snapshot()
+            _state.update { it.copy(usbHelperActive = snap.helperActive) }
+            if (changed && listener?.liveConnection != null) {
+                lastAdvertisedAddrs = snap.addrs
+                sendHello()
+            }
+        }
+    }
+
+    fun helloJson(): JSONObject {
+        val settings = _state.value.settings
+        val factor = settings.virtualDesktop.factor
+        val wide = even((panelWide * factor).roundToInt())
+        val high = even((panelHigh * factor).roundToInt())
+        val ceiling = DecodeCeilingResolver.resolve(settings.decodeCeiling, panelWide, panelHigh)
+        val addrs = linkPolicy.addrs()
+        lastHelloWide = wide
+        lastHelloHigh = high
+        lastAdvertisedAddrs = addrs
+        return ControlMessages.hello(
+            pixelsWide = wide,
+            pixelsHigh = high,
+            scale = panelScale,
+            device = if (smallestWidthDp >= 600) "AndroidTablet" else "Android",
+            installId = installId,
+            maxEncodeWide = ceiling?.wide,
+            maxEncodeHigh = ceiling?.high,
+            addrs = addrs,
+        )
+    }
+
+    private fun startListenerLocked() {
+        if (listener != null) return
+        val current = ReceiverListener(
+            helloProvider = { helloJson() },
+            onSession = object : ReceiverListener.SessionCallbacks {
+                override fun onAdopted(
+                    connection: FramedConnection,
+                    generation: Long,
+                    initialPayloads: List<ByteArray>,
+                    transport: String,
+                ) {
+                    listener?.liveConnection?.onFrame = { payload ->
+                        bytesThisWindow.addAndGet(payload.size.toLong())
+                        handleFrame(payload)
+                    }
+                    handler.post { handleAdopted(connection, generation, transport) }
+                }
+
+                override fun onSessionClosed(generation: Long) {
+                    handler.post { handleClosed(generation) }
+                }
+
+                override fun onListening(bound: Boolean) {
+                    _state.update {
+                        it.copy(
+                            listening = bound,
+                            status = if (bound) "Listening on :${WireProtocol.DEFAULT_PORT}" else "Stopped",
+                        )
+                    }
+                }
+
+                override fun onWatchdog() {
+                    Log.i(WireProtocol.LOG_TAG, "watchdog")
+                }
+            },
+        )
+        listener = current
+        current.start()
+        nsd.start(_state.value.serviceName, installId, WireProtocol.DEFAULT_PORT)
+    }
+
+    private fun stopListenerLocked(sendClosing: Boolean) {
+        if (sendClosing) {
+            listener?.sendControl(OutboundKind.CLOSING, ControlMessages.closing())
+        }
+        listener?.stop()
+        listener = null
+        nsd.stop()
+        decoder.reset()
+        clock.reset()
+        kfThrottle.invalidateAll()
+        resetCursor()
+        sessionGeneration = 0
+        _state.update {
+            it.copy(
+                phase = if (it.updateMessage != null) ReceiverPhase.BLOCKED else ReceiverPhase.IDLE,
+                listening = false,
+                transport = null,
+                videoWidth = 0,
+                videoHeight = 0,
+            )
+        }
+    }
+
+    private fun handleAdopted(connection: FramedConnection, generation: Long, transport: String) {
+        sessionGeneration = generation
+        lastCursorSeq = 0
+        clock.reset()
+        kfThrottle.invalidateAll()
+        unknownTypes.clear()
+        decoder.reset()
+        resetCursor()
+        lastPingAt = 0
+        lastStatsAt = 0
+        windowStartMs = SystemClock.elapsedRealtime()
+        framesThisWindow.set(0)
+        bytesThisWindow.set(0)
+        senderHealth = null
+        _state.update {
+            it.copy(
+                phase = if (it.updateMessage != null) ReceiverPhase.BLOCKED else ReceiverPhase.STREAMING,
+                status = "Connected ($transport)",
+                transport = transport,
+                senderTooOld = false,
+            )
+        }
+        Log.i(WireProtocol.LOG_TAG, "session adopted from ${connection.remoteAddress?.hostAddress} ($transport)")
+    }
+
+    private fun handleClosed(generation: Long) {
+        if (generation != sessionGeneration && sessionGeneration != 0L) return
+        decoder.reset()
+        clock.reset()
+        resetCursor()
+        _state.update {
+            it.copy(
+                phase = if (it.updateMessage != null) ReceiverPhase.BLOCKED else ReceiverPhase.IDLE,
+                status = if (it.listening) "Listening on :${WireProtocol.DEFAULT_PORT}" else "Stopped",
+                transport = null,
+                videoWidth = 0,
+                videoHeight = 0,
+                statsText = null,
+            )
+        }
+    }
+
+    private fun handleFrame(payload: ByteArray) {
+        when (Demux.classify(payload)) {
+            FrameKind.CONTROL -> handleControl(payload)
+            FrameKind.VIDEO -> decoder.offerAccessUnit(payload)
+        }
+    }
+
+    private fun handleControl(payload: ByteArray) {
+        val obj = InboundControl.parse(payload) ?: return
+        when (val type = obj.optString("type")) {
+            WireMessage.PONG -> {
+                val t1 = obj.optDouble("t", Double.NaN)
+                val mt = obj.optDouble("mt", Double.NaN)
+                if (t1.isFinite() && mt.isFinite()) {
+                    clock.onPong(t1, mt, System.currentTimeMillis().toDouble())
+                }
+            }
+            WireMessage.PING -> {
+                senderHealth = SenderHealth.fromPing(obj)
+            }
+            WireMessage.WELCOME -> {
+                val welcome = InboundControl.welcome(obj) ?: return
+                if (welcome.pv < WireProtocol.MIN_SUPPORTED_PEER) {
+                    _state.update {
+                        it.copy(
+                            senderTooOld = true,
+                            status = "Update the Mac app to continue",
+                        )
+                    }
+                }
+            }
+            WireMessage.UPDATE_REQUIRED -> {
+                val required = InboundControl.updateRequired(obj)
+                _state.update {
+                    it.copy(
+                        phase = ReceiverPhase.BLOCKED,
+                        updateMessage = required.message,
+                        status = required.message,
+                    )
+                }
+            }
+            WireMessage.CURSOR -> {
+                val pos = InboundControl.cursorPosition(obj) ?: return
+                val seq = pos.sequence
+                if (seq != null && seq <= lastCursorSeq) return
+                if (seq != null) lastCursorSeq = seq
+                _state.update {
+                    it.copy(cursor = it.cursor.copy(x = pos.x, y = pos.y, visible = pos.visible))
+                }
+            }
+            WireMessage.CURSOR_IMG -> {
+                val image = InboundControl.cursorImage(obj) ?: return
+                val bitmap = BitmapFactory.decodeByteArray(image.png, 0, image.png.size) ?: return
+                _state.update {
+                    it.copy(
+                        cursor = it.cursor.copy(
+                            bitmap = bitmap,
+                            normalizedWidth = image.normalizedWidth,
+                            normalizedHeight = image.normalizedHeight,
+                            anchorX = image.anchorX,
+                            anchorY = image.anchorY,
+                        ),
+                    )
+                }
+            }
+            else -> InboundControl.logUnknownTypeOnce(unknownTypes, type)
+        }
+    }
+
+    private fun requestKeyframe(reason: String?) {
+        val generation = sessionGeneration
+        if (generation == 0L) return
+        when (val action = kfThrottle.request(generation, SystemClock.elapsedRealtime())) {
+            KeyframeRequestAction.SendNow -> {
+                listener?.sendControl(OutboundKind.KEYFRAME, ControlMessages.keyframeRequest(reason))
+            }
+            is KeyframeRequestAction.RetryAfter -> {
+                handler.postDelayed({
+                    when (kfThrottle.retry(generation, SystemClock.elapsedRealtime())) {
+                        KeyframeRequestAction.SendNow ->
+                            listener?.sendControl(OutboundKind.KEYFRAME, ControlMessages.keyframeRequest(reason))
+                        is KeyframeRequestAction.RetryAfter -> Unit
+                        else -> Unit
+                    }
+                }, action.delayMs)
+            }
+            else -> Unit
+        }
+    }
+
+    private fun sendHello() {
+        listener?.sendControl(OutboundKind.HELLO, helloJson())
+        Log.i(WireProtocol.LOG_TAG, "hello sent")
+    }
+
+    private fun sendStats() {
+        val now = SystemClock.elapsedRealtime()
+        val elapsed = ((now - windowStartMs).coerceAtLeast(1)).toDouble() / 1000.0
+        val frames = framesThisWindow.getAndSet(0)
+        val bytes = bytesThisWindow.getAndSet(0)
+        windowStartMs = now
+        val fps = frames / elapsed
+        val mbps = (bytes * 8.0) / elapsed / 1_000_000.0
+        val dec50 = decodeSamples.sorted().let { if (it.isEmpty()) 0.0 else it[it.size / 2] }
+        val transport = _state.value.transport ?: "wifi"
+        val text = "fps=${"%.1f".format(fps)}  mbps=${"%.2f".format(mbps)}  " +
+            "q=${decoder.queuedFrames}  drops=${decoder.dropCount}  $transport"
+        _state.update { it.copy(statsText = text) }
+        listener?.sendControl(
+            OutboundKind.STATS,
+            ControlMessages.stats(
+                transport = transport,
+                fps = fps,
+                mbps = mbps,
+                dec50 = dec50,
+                stalls = decoder.stallCount,
+                queue = decoder.queuedFrames,
+                drops = decoder.dropCount,
+            ),
+        )
+    }
+
+    private fun resetCursor() {
+        lastCursorSeq = 0
+        _state.update { it.copy(cursor = CursorUi()) }
+    }
+
+    private fun even(value: Int): Int {
+        val aligned = value and 1.inv()
+        return if (aligned < 16) 16 else aligned
+    }
+}

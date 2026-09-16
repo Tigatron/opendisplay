@@ -30,6 +30,13 @@ newnewicon.png
 # Android local SDK path (machine-specific)
 Android/local.properties
 
+# The receiver package is build.terrynamic.opendisplay. The directory named
+# `build/` above would otherwise hide every Kotlin source file.
+!Android/app/src/main/java/build/
+!Android/app/src/main/java/build/**
+!Android/app/src/test/java/build/
+!Android/app/src/test/java/build/**
+
 # Fastlane generated output
 fastlane/report.xml
 fastlane/Preview.html

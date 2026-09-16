@@ -1,6 +1,12 @@
 *.iml
 .gradle
 /local.properties
+
+# Keep the application package (build.terrynamic.*) visible despite root build/
+!app/src/main/java/build/
+!app/src/main/java/build/**
+!app/src/test/java/build/
+!app/src/test/java/build/**
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml

@@ -21,6 +21,8 @@ data class StatsSnapshot(
     val encDrops: Int? = null,
     val netDrops: Int? = null,
     val pending: Int? = null,
+    val codecName: String? = null,
+    val lowLatency: Boolean = false,
 ) {
     fun overlayText(): String {
         val e2e = if (e2e50 != null && e2e95 != null) {
@@ -41,7 +43,9 @@ data class StatsSnapshot(
             appendLine("capFps     ${capFps?.round1() ?: "—"}")
             appendLine("encDrops   ${encDrops ?: "—"}")
             appendLine("netDrops   ${netDrops ?: "—"}")
-            append("pending    ${pending ?: "—"}")
+            appendLine("pending    ${pending ?: "—"}")
+            appendLine("codecName  ${codecName ?: "—"}")
+            append("lowLatency ${if (lowLatency) "true" else "false"}")
         }
     }
 

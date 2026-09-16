@@ -39,6 +39,8 @@ class StatsJsonTest {
         assertFalse(json.has("e2e95"))
         assertEquals(0, json.getInt("cursorUpdates"))
         assertEquals(0, json.getInt("cursorLost"))
+        assertEquals("", json.getString("codecName"))
+        assertFalse(json.getBoolean("lowLatency"))
     }
 
     @Test
@@ -60,5 +62,21 @@ class StatsJsonTest {
         assertTrue(json.getBoolean("offsetKnown"))
         assertEquals(18.0, json.getDouble("e2e50"), 0.001)
         assertEquals(27.0, json.getDouble("e2e95"), 0.001)
+        val named = ControlMessages.stats(
+            transport = "wifi",
+            fps = 2.0,
+            mbps = 1.0,
+            ph50 = 10.0,
+            ph95 = 12.0,
+            dec50 = 9.0,
+            stalls = 0,
+            queue = 0,
+            drops = 0,
+            offsetKnown = false,
+            codecName = "c2.qti.avc.decoder",
+            lowLatency = true,
+        )
+        assertEquals("c2.qti.avc.decoder", named.getString("codecName"))
+        assertTrue(named.getBoolean("lowLatency"))
     }
 }

@@ -1,6 +1,7 @@
 package com.terrynamic.opendisplay.video
 
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.os.Build
 import android.os.Handler
@@ -60,6 +61,14 @@ class Decoder(
     val queuedFrames: Int get() = synchronized(lock) { queue.size }
     val stallCount: Int get() = stalls.get()
     val dropCount: Int get() = drops.get()
+
+    @Volatile
+    var codecName: String? = null
+        private set
+
+    @Volatile
+    var lowLatency: Boolean = false
+        private set
 
     fun setQueueDepth(frames: Int) {
         maxQueueFrames = frames.coerceAtLeast(1)
@@ -234,27 +243,43 @@ class Decoder(
         publishSize(width, height)
         var newCodec: MediaCodec? = null
         try {
-            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
-            format.setByteBuffer("csd-0", ByteBuffer.wrap(withStartCode(sps)))
-            format.setByteBuffer("csd-1", ByteBuffer.wrap(withStartCode(pps)))
-            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1024 * 1024)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                format.setInteger(MediaFormat.KEY_OPERATING_RATE, 120)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                format.setInteger(MediaFormat.KEY_PRIORITY, 0)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-            }
+            val format = baseVideoFormat(width, height, sps, pps)
             newCodec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            val name = newCodec.name
+            val lowLatencyFeature = lowLatencyFeatureSupported(newCodec)
+            Log.i(WireProtocol.LOG_TAG, "decoder $name FEATURE_LowLatency=$lowLatencyFeature")
+            val qcom = QualcommDecoderHints.matches(name)
+            if (qcom) {
+                QualcommDecoderHints.apply(format)
+            }
             newCodec.setCallback(callback, handler)
-            newCodec.configure(format, surface, null, 0)
+            try {
+                newCodec.configure(format, surface, null, 0)
+            } catch (e: Exception) {
+                if (!qcom) throw e
+                Log.w(
+                    WireProtocol.LOG_TAG,
+                    "Qualcomm vendor keys rejected (${e.javaClass.name}: ${e.message}); " +
+                        "retrying with KEY_LOW_LATENCY only",
+                )
+                try {
+                    newCodec.release()
+                } catch (_: Exception) {
+                }
+                newCodec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                newCodec.setCallback(callback, handler)
+                newCodec.configure(baseVideoFormat(width, height, sps, pps), surface, null, 0)
+            }
             newCodec.start()
             codec = newCodec
+            codecName = name
+            lowLatency = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
             configured = true
             freeInputs.clear()
-            Log.i(WireProtocol.LOG_TAG, "MediaCodec configured ${width}x${height}")
+            Log.i(
+                WireProtocol.LOG_TAG,
+                "MediaCodec configured ${width}x${height} codec=$name lowLatency=$lowLatency",
+            )
             onConfigured(width, height)
         } catch (e: Exception) {
             Log.e(WireProtocol.LOG_TAG, "MediaCodec configure failed: ${e.message}", e)
@@ -263,7 +288,36 @@ class Decoder(
             } catch (_: Exception) {
             }
             configured = false
+            lowLatency = false
             onNeedKeyframe(null)
+        }
+    }
+
+    private fun baseVideoFormat(width: Int, height: Int, sps: ByteArray, pps: ByteArray): MediaFormat {
+        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+        format.setByteBuffer("csd-0", ByteBuffer.wrap(withStartCode(sps)))
+        format.setByteBuffer("csd-1", ByteBuffer.wrap(withStartCode(pps)))
+        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 4 * 1024 * 1024)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            format.setInteger(MediaFormat.KEY_OPERATING_RATE, 120)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+        }
+        return format
+    }
+
+    private fun lowLatencyFeatureSupported(codec: MediaCodec): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        return try {
+            codec.codecInfo
+                .getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
+        } catch (_: Exception) {
+            false
         }
     }
 

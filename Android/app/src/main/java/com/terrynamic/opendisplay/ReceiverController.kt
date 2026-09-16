@@ -603,12 +603,16 @@ class ReceiverController(private val app: Application) {
             encDrops = health?.encDrops,
             netDrops = health?.netDrops,
             pending = health?.pending,
+            codecName = decoder.codecName,
+            lowLatency = decoder.lowLatency,
         )
         publishOverlay()
         Log.i(
             WireProtocol.LOG_TAG,
             "stats transport=$transport fps=${"%.1f".format(fps)} mbps=${"%.2f".format(mbps)} " +
-                "offsetKnown=$offsetKnown e2e50=${latencySnap.e2e50} e2e95=${latencySnap.e2e95}",
+                "dec50=${"%.1f".format(latencySnap.dec50)} ph50=${"%.1f".format(latencySnap.ph50)} " +
+                "offsetKnown=$offsetKnown e2e50=${latencySnap.e2e50} e2e95=${latencySnap.e2e95} " +
+                "codecName=${decoder.codecName} lowLatency=${decoder.lowLatency}",
         )
         listener?.sendControl(
             OutboundKind.STATS,
@@ -627,6 +631,8 @@ class ReceiverController(private val app: Application) {
                 e2e95 = latencySnap.e2e95,
                 cursorUpdates = cursorChannel.cursorUpdates,
                 cursorLost = cursorChannel.cursorLost,
+                codecName = decoder.codecName,
+                lowLatency = decoder.lowLatency,
             ),
         )
     }
@@ -707,6 +713,8 @@ class ReceiverController(private val app: Application) {
             encDrops = senderHealth?.encDrops ?: lastOverlay.encDrops,
             netDrops = senderHealth?.netDrops ?: lastOverlay.netDrops,
             pending = senderHealth?.pending ?: lastOverlay.pending,
+            codecName = decoder.codecName ?: lastOverlay.codecName,
+            lowLatency = decoder.lowLatency,
         )
         lastOverlay = overlay
         _state.update { it.copy(statsText = overlay.overlayText()) }

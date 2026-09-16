@@ -107,6 +107,8 @@ object ControlMessages {
         e2e95: Double? = null,
         cursorUpdates: Int = 0,
         cursorLost: Int = 0,
+        codecName: String? = null,
+        lowLatency: Boolean = false,
     ): JSONObject = JSONObject()
         .put("type", WireMessage.STATS)
         .put("transport", transport)
@@ -126,6 +128,8 @@ object ControlMessages {
             }
             json.put("cursorUpdates", cursorUpdates)
             json.put("cursorLost", cursorLost)
+            json.put("codecName", codecName ?: "")
+            json.put("lowLatency", lowLatency)
         }
 
     fun cursorAck(): JSONObject = JSONObject().put("type", WireMessage.CURSOR_ACK)

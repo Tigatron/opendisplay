@@ -46,7 +46,7 @@ targets:
         NSLocalNetworkUsageDescription: OpenDisplay USB Helper 通过 Bonjour 向本机的 OpenDisplay 应用通告 USB 连接的 Android 接收端。The helper advertises the USB-connected Android receiver to the OpenDisplay app on this Mac via Bonjour.
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: build.terrynamic.opendisplay.usbhelper
+        PRODUCT_BUNDLE_IDENTIFIER: com.terrynamic.opendisplay.usbhelper
         PRODUCT_NAME: OpenDisplay USB Helper
         INFOPLIST_FILE: Info.plist
         GENERATE_INFOPLIST_FILE: "NO"
@@ -64,7 +64,7 @@ targets:
           - UI
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: build.terrynamic.opendisplay.usbhelper.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.terrynamic.opendisplay.usbhelper.tests
         GENERATE_INFOPLIST_FILE: "YES"
         TEST_HOST: ""
         BUNDLE_LOADER: ""

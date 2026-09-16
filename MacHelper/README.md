@@ -4,7 +4,7 @@ A macOS menu-bar helper that lets the **unmodified** stock OpenDisplay Mac app (
 
 The stock sender can browse `_opensidecar._tcp` and, once connected, probe `hello.addrs` on port 9000 with Wi-Fi/cellular prohibited. It cannot talk to Android over USB by itself. This helper:
 
-1. Watches `adb track-devices -l` for authorized devices that have `build.terrynamic.opendisplay` installed.
+1. Watches `adb track-devices -l` for authorized devices that have `com.terrynamic.opendisplay` installed.
 2. Forwards `127.0.0.1:<P>` → device TCP 9000 (`P` is 9000 when free, otherwise 9010+).
 3. Probes the tunnel for one length-prefixed `hello` frame.
 4. Publishes a **loopback-only** Bonjour proxy (`lo0`) so the stock app discovers `127.0.0.1:<P>`.
@@ -33,7 +33,9 @@ xcodebuild -project OpenDisplayUSBHelper.xcodeproj \
   build
 ```
 
-Or open `OpenDisplayUSBHelper.xcodeproj` in Xcode after `./generate.sh`. Signing is local (`CODE_SIGN_IDENTITY=-`); no developer team is required.
+Or open `OpenDisplayUSBHelper.xcodeproj` in Xcode after `./generate.sh`. Signing is local (`CODE_SIGN_IDENTITY=-`); no developer team is required. The helper bundle id is `com.terrynamic.opendisplay.usbhelper` (`Info.plist` uses `$(PRODUCT_BUNDLE_IDENTIFIER)`).
+
+macOS Local Network permission is keyed to that bundle id. After this rename, System Settings will treat the helper as a new app — allow it again under Privacy & Security → Local Network.
 
 Unit tests (no adb, no network, no tablet):
 
@@ -75,8 +77,8 @@ When the tunnel owns **port 9000**, the helper broadcasts every 5 s:
 
 ```
 adb -s SERIAL shell am broadcast \
-  -n build.terrynamic.opendisplay/.ipc.HelperReceiver \
-  -a build.terrynamic.opendisplay.USB_TUNNEL \
+  -n com.terrynamic.opendisplay/.ipc.HelperReceiver \
+  -a com.terrynamic.opendisplay.USB_TUNNEL \
   --ei port 9000 --es helperVersion <version> --ei ttlMs 15000
 ```
 
@@ -100,7 +102,7 @@ and deletes those keys when the tunnel goes down. The stock app reads `host`/`po
 | Setting | Default | Purpose |
 |---|---|---|
 | adb path override | empty | Then `$PATH`, `/opt/homebrew/bin/adb`, `~/Library/Android/sdk/platform-tools/adb`, `$ANDROID_HOME/platform-tools/adb` |
-| Launch receiver app on attach | on | `am start -n build.terrynamic.opendisplay/.MainActivity` |
+| Launch receiver app on attach | on | `am start -n com.terrynamic.opendisplay/.MainActivity` |
 | Send USB heartbeat (B2 auto-upgrade) | on | See above; only when `P == 9000` |
 | Auto-connect running Mac app | off | Writes OpenDisplay `host`/`port` |
 | Start at login | off | `SMAppService.mainApp` |

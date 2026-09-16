@@ -11,8 +11,8 @@ struct HelperSnapshot: Equatable {
 /// Owns adb tracking and per-device tunnels. All mutable state lives on
 /// `queue`. Process waits and TCP probes run on `io`.
 final class HelperEngine: @unchecked Sendable {
-    let queue = DispatchQueue(label: "build.terrynamic.opendisplay.usbhelper.engine")
-    private let io = DispatchQueue(label: "build.terrynamic.opendisplay.usbhelper.io", qos: .utility)
+    let queue = DispatchQueue(label: "\(HelperConstants.helperBundleId).engine")
+    private let io = DispatchQueue(label: "\(HelperConstants.helperBundleId).io", qos: .utility)
     private let log: HelperLogger
     private let onChange: (HelperSnapshot) -> Void
 

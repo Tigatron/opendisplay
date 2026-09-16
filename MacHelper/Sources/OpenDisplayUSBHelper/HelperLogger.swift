@@ -3,7 +3,7 @@ import Foundation
 final class HelperLogger: @unchecked Sendable {
     static let shared = HelperLogger()
 
-    private let queue = DispatchQueue(label: "build.terrynamic.opendisplay.usbhelper.log")
+    private let queue = DispatchQueue(label: "\(HelperConstants.helperBundleId).log")
     private let maxBytes: UInt64
     private let directory: URL
     private let fileURL: URL

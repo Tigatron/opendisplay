@@ -77,6 +77,48 @@ final class AdbClientTests: XCTestCase {
         XCTAssertFalse(runner.commands.contains(where: { $0.contains("63029") }))
     }
 
+    func testHeartbeatTargetsRenamedReceiver() {
+        let runner = ScriptedAdbRunner(scripts: [
+            .init(
+                expect: [
+                    "-s", "R52", "shell", "am", "broadcast",
+                    "-n", "com.terrynamic.opendisplay/.ipc.HelperReceiver",
+                    "-a", "com.terrynamic.opendisplay.USB_TUNNEL",
+                    "--ei", "port", "9000",
+                    "--es", "helperVersion", "1.0.0",
+                    "--ei", "ttlMs", "15000"
+                ],
+                stdout: ""
+            )
+        ])
+        let client = AdbClient(runner: runner)
+        _ = client.sendHeartbeat(serial: "R52", port: 9000, helperVersion: "1.0.0")
+        XCTAssertEqual(runner.commands.count, 1)
+    }
+
+    func testLaunchReceiverUsesRenamedActivity() {
+        let runner = ScriptedAdbRunner(scripts: [
+            .init(
+                expect: ["-s", "R52", "shell", "am", "start", "-n", "com.terrynamic.opendisplay/.MainActivity"],
+                stdout: ""
+            )
+        ])
+        let client = AdbClient(runner: runner)
+        _ = client.launchReceiver(serial: "R52")
+        XCTAssertEqual(runner.commands.count, 1)
+    }
+
+    func testReceiverPathUsesRenamedPackage() {
+        let runner = ScriptedAdbRunner(scripts: [
+            .init(
+                expect: ["-s", "R52", "shell", "pm", "path", "com.terrynamic.opendisplay"],
+                stdout: "package:/data/app/com.terrynamic.opendisplay.apk\n"
+            )
+        ])
+        let client = AdbClient(runner: runner)
+        XCTAssertTrue(client.isReceiverInstalled(serial: "R52"))
+    }
+
     func testListForwardsFiltersToRequestedSerial() {
         let runner = ScriptedAdbRunner(scripts: [
             .init(

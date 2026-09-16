@@ -1,10 +1,11 @@
 import Foundation
 
 enum HelperConstants {
-    static let receiverPackage = "build.terrynamic.opendisplay"
-    static let receiverActivity = "build.terrynamic.opendisplay/.MainActivity"
-    static let heartbeatComponent = "build.terrynamic.opendisplay/.ipc.HelperReceiver"
-    static let heartbeatAction = "build.terrynamic.opendisplay.USB_TUNNEL"
+    static let helperBundleId = "com.terrynamic.opendisplay.usbhelper"
+    static let receiverPackage = "com.terrynamic.opendisplay"
+    static let receiverActivity = "com.terrynamic.opendisplay/.MainActivity"
+    static let heartbeatComponent = "com.terrynamic.opendisplay/.ipc.HelperReceiver"
+    static let heartbeatAction = "com.terrynamic.opendisplay.USB_TUNNEL"
     static let bonjourType = "_opensidecar._tcp"
     static let openDisplayDefaultsDomain = "com.peetzweg.opensidecar.mac"
     static let preferredTunnelPort: UInt16 = 9000

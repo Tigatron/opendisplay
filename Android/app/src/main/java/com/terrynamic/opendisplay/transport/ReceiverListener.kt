@@ -17,6 +17,8 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 class ReceiverListener(
     private val port: Int = WireProtocol.DEFAULT_PORT,
@@ -39,7 +41,8 @@ class ReceiverListener(
     private val running = AtomicBoolean(false)
     private val machine = NewcomerMachine()
     private val machineLock = Any()
-    private val bindLock = Any()
+    private val bindLock = ReentrantLock()
+    private val bindChanged = bindLock.newCondition()
     private val generation = AtomicLong(0)
     private val sockets = ConcurrentHashMap<Long, Socket>()
     private val timeouts = ConcurrentHashMap<Long, ScheduledFuture<*>>()
@@ -48,6 +51,13 @@ class ReceiverListener(
 
     @Volatile
     private var listen: ListenBind? = null
+
+    @Volatile
+    private var desiredHost: String = ListenerGate.WILDCARD
+    private var retryAttempt = 0
+    private var retryFuture: ScheduledFuture<*>? = null
+    private var lastBindError: String? = null
+    private val listenGeneration = AtomicLong(0)
 
     @Volatile
     var liveConnection: LiveSession? = null
@@ -69,12 +79,15 @@ class ReceiverListener(
 
     fun stop() {
         if (!running.compareAndSet(true, false)) return
-        synchronized(bindLock) {
+        bindLock.withLock {
+            retryFuture?.cancel(false)
+            retryFuture = null
             try {
                 listen?.server?.close()
             } catch (_: Exception) {
             }
             listen = null
+            bindChanged.signalAll()
         }
         acceptThread?.interrupt()
         acceptThread = null
@@ -100,15 +113,7 @@ class ReceiverListener(
 
     private fun acceptLoop() {
         while (running.get()) {
-            val snap = listen
-            if (snap == null) {
-                try {
-                    Thread.sleep(10)
-                } catch (_: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                }
-                continue
-            }
+            val snap = waitForOpenListen() ?: continue
             try {
                 val socket = snap.server.accept()
                 val current = listen
@@ -129,11 +134,44 @@ class ReceiverListener(
                 }
                 applyActions(actions, initialSocket = socket)
             } catch (e: IOException) {
-                val stillCurrent = running.get() && listen?.server === snap.server
-                if (stillCurrent) {
-                    Log.w(WireProtocol.LOG_TAG, "accept failed: ${e.message}")
+                if (!running.get()) break
+                val swappedOrClosed = snap.server.isClosed || listen?.server !== snap.server
+                if (!swappedOrClosed) {
+                    Log.w(
+                        WireProtocol.LOG_TAG,
+                        "accept failed: ${e.javaClass.name}: ${e.message}",
+                    )
+                    bindLock.withLock {
+                        try {
+                            bindChanged.await(50, TimeUnit.MILLISECONDS)
+                        } catch (_: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    private fun waitForOpenListen(): ListenBind? {
+        bindLock.withLock {
+            while (running.get()) {
+                val current = listen
+                if (!ListenerSwapPolicy.acceptMustWait(
+                        listenNull = current == null,
+                        serverClosed = current?.server?.isClosed == true,
+                    )
+                ) {
+                    return current
+                }
+                try {
+                    bindChanged.await(50, TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return null
+                }
+            }
+            return null
         }
     }
 
@@ -149,35 +187,104 @@ class ReceiverListener(
     }
 
     private fun rebind(host: String) {
-        synchronized(bindLock) {
+        bindLock.withLock {
             if (!running.get()) return
+            desiredHost = host
             val current = listen
-            if (current != null && current.host == host && !current.server.isClosed) return
-            val next = ServerSocket()
-            next.reuseAddress = true
-            try {
-                current?.server?.close()
-            } catch (_: Exception) {
-            }
-            try {
-                next.bind(InetSocketAddress(host, port), 8)
-                next.receiveBufferSize = TransportBuffering.LISTEN_RECEIVE_BUFFER
-            } catch (e: Exception) {
-                Log.w(WireProtocol.LOG_TAG, "listener rebind $host:$port failed: ${e.message}")
-                try {
-                    next.close()
-                } catch (_: Exception) {
-                }
-                return
-            }
-            listen = ListenBind(
-                server = next,
-                generation = (current?.generation ?: 0L) + 1L,
-                host = host,
+            val snapshot = ListenerSwapPolicy.Snapshot(
+                host = current?.host,
+                open = current != null && !current.server.isClosed,
             )
-            val extra = if (host == ListenerGate.LOOPBACK) " (usb session active)" else ""
-            Log.i(WireProtocol.LOG_TAG, "listener bound $host:$port$extra")
+            when (val plan = ListenerSwapPolicy.plan(snapshot, host)) {
+                is ListenerSwapPolicy.Plan.AlreadyBound -> {
+                    cancelRetryLocked()
+                    retryAttempt = 0
+                }
+                is ListenerSwapPolicy.Plan.BindFresh -> {
+                    installListenLocked(tryOpen(plan.host), boundHost = plan.host, desired = host)
+                }
+                is ListenerSwapPolicy.Plan.CloseThenBind -> {
+                    closeListenSocketLocked(current)
+                    listen = null
+                    bindChanged.signalAll()
+                    val desiredSocket = tryOpen(plan.desired)
+                    if (desiredSocket != null) {
+                        installListenLocked(desiredSocket, boundHost = plan.desired, desired = host)
+                    } else {
+                        installListenLocked(tryOpen(plan.fallback), boundHost = plan.fallback, desired = host)
+                    }
+                }
+            }
         }
+    }
+
+    private fun tryOpen(host: String): ServerSocket? {
+        return try {
+            val server = ServerSocket()
+            server.reuseAddress = true
+            // Must be set before bind or the size is ignored; after bind it
+            // can throw on Android 16 (that was the original swap failure).
+            server.receiveBufferSize = TransportBuffering.LISTEN_RECEIVE_BUFFER
+            server.bind(InetSocketAddress(host, port), 8)
+            lastBindError = null
+            server
+        } catch (e: Exception) {
+            logBindError(host, e)
+            null
+        }
+    }
+
+    private fun installListenLocked(server: ServerSocket?, boundHost: String, desired: String) {
+        if (server != null) {
+            listen = ListenBind(
+                server = server,
+                generation = listenGeneration.incrementAndGet(),
+                host = boundHost,
+            )
+            val extra = if (boundHost == ListenerGate.LOOPBACK) " (usb session active)" else ""
+            Log.i(WireProtocol.LOG_TAG, "listener bound $boundHost:$port$extra")
+            if (boundHost == desired) {
+                retryAttempt = 0
+                cancelRetryLocked()
+            } else {
+                scheduleRetryLocked(desired)
+            }
+        } else {
+            listen = null
+            scheduleRetryLocked(desired)
+        }
+        bindChanged.signalAll()
+    }
+
+    private fun closeListenSocketLocked(current: ListenBind?) {
+        try {
+            current?.server?.close()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun scheduleRetryLocked(desired: String) {
+        val exec = scheduler ?: return
+        retryFuture?.cancel(false)
+        val delay = ListenerSwapPolicy.retryDelayMs(retryAttempt)
+        retryAttempt += 1
+        retryFuture = exec.schedule({
+            if (running.get() && desiredHost == desired) {
+                rebind(desired)
+            }
+        }, delay, TimeUnit.MILLISECONDS)
+    }
+
+    private fun cancelRetryLocked() {
+        retryFuture?.cancel(false)
+        retryFuture = null
+    }
+
+    private fun logBindError(host: String, error: Exception) {
+        val key = "${error.javaClass.name}: ${error.message}"
+        if (lastBindError == key) return
+        lastBindError = key
+        Log.w(WireProtocol.LOG_TAG, "listener bind $host:$port failed: $key", error)
     }
 
     private fun applyActions(actions: List<NewcomerMachine.Action>, initialSocket: Socket? = null) {

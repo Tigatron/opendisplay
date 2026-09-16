@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "build.terrynamic.opendisplay"
+    namespace = "com.terrynamic.opendisplay"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "build.terrynamic.opendisplay"
+        applicationId = "com.terrynamic.opendisplay"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

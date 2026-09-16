@@ -50,13 +50,13 @@
             android:name=".ipc.HelperReceiver"
             android:exported="true">
             <intent-filter>
-                <action android:name="build.terrynamic.opendisplay.USB_TUNNEL" />
+                <action android:name="com.terrynamic.opendisplay.USB_TUNNEL" />
             </intent-filter>
         </receiver>
 
         <provider
             android:name=".ipc.InfoProvider"
-            android:authorities="build.terrynamic.opendisplay.info"
+            android:authorities="com.terrynamic.opendisplay.info"
             android:exported="true" />
     </application>
 </manifest>

@@ -2,7 +2,7 @@
 
 Receiver for the stock OpenDisplay Mac sender (`pv` 3). Listens on TCP 9000, advertises `_opensidecar._tcp.`, and decodes the H.264 Annex-B stream described in [PROTOCOL.md](../PROTOCOL.md).
 
-Package / `applicationId`: `build.terrynamic.opendisplay`. Default Bonjour name: `BUILD.TERRYNAMIC`.
+Package / `applicationId`: `com.terrynamic.opendisplay`. Default Bonjour name: `BUILD.TERRYNAMIC`.
 
 ## Build
 
@@ -37,8 +37,8 @@ Heartbeat (from the helper):
 
 ```bash
 adb shell am broadcast \
-  -n build.terrynamic.opendisplay/.ipc.HelperReceiver \
-  -a build.terrynamic.opendisplay.USB_TUNNEL \
+  -n com.terrynamic.opendisplay/.ipc.HelperReceiver \
+  -a com.terrynamic.opendisplay.USB_TUNNEL \
   --ei port 9000 \
   --es helperVersion 1.0 \
   --ei ttlMs 15000

@@ -27,6 +27,9 @@ newnewicon.png
 .env
 .claude/
 
+# Android local SDK path (machine-specific)
+Android/local.properties
+
 # Fastlane generated output
 fastlane/report.xml
 fastlane/Preview.html

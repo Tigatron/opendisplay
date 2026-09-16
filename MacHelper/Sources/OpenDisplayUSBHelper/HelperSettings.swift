@@ -58,11 +58,12 @@ final class HelperSettings: ObservableObject {
         launchReceiverOnAttach = defaults.object(forKey: Keys.launchReceiverOnAttach) as? Bool ?? true
         sendHeartbeat = defaults.object(forKey: Keys.sendHeartbeat) as? Bool ?? true
         writeOpenDisplayDefaults = defaults.bool(forKey: Keys.writeOpenDisplayDefaults)
-        loginItemStatus = SMAppService.mainApp.status
+        let status = SMAppService.mainApp.status
+        loginItemStatus = status
         if let stored = defaults.object(forKey: Keys.startAtLogin) as? Bool {
             startAtLogin = stored
         } else {
-            startAtLogin = loginItemStatus == .enabled
+            startAtLogin = status == .enabled
         }
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: RunLoop.main)

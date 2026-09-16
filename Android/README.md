@@ -62,7 +62,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 | Decode ceiling | Advertised as `hello.maxEncodeWide/High`. Auto / Panel / 1920x1080 / Custom / Off. Off omits the fields. Auto is the largest of the panel size and MediaCodec 60 fps performance points (API 29+; falls back to Panel). When virtual desktop > 100% and ceiling is Auto/Panel, `maxEncode*` is exactly the physical panel. | `auto`, `panel`, `off`, or `<W>x<H>` |
 | Virtual desktop | `hello.pixelsWide/High` = physical pixels × 100/125/150%, rounded even. Idle/streaming UI shows `desktop <W>x<H>pt` (hello pixels / 2) and `stream <W>x<H>` (SPS). | `100`, `125`, `150` |
 | Stats overlay | Monospace overlay (default off): transport, fps, mbps, e2e50/95, ph50, dec50, queue, stream, desktop, plus sender `capFps`/`encDrops`/`netDrops`/`pending`. | `0` or `1` |
-| Cursor UDP | Reserved for the UDP cursor side channel (default on). | `0` or `1` |
+| Cursor UDP | UDP cursor side channel (default on). Off mid-session closes the socket and re-sends `hello` without `cursorPort`. | `0` or `1` |
 
 `InfoProvider.update` is honored only for `Binder` uid `2000` (`SHELL_UID`) or `0`. Other callers are logged and rejected. Applying a hello-relevant key re-sends `hello` on the live session; `statsOverlay` toggles immediately.
 
@@ -87,14 +87,40 @@ adb shell content update --uri content://com.terrynamic.opendisplay.info --bind 
 | `pv` / `min` | 3 / 1 |
 | Framing | `[u32 BE length][payload]`; inbound 1..16 MiB, outbound 1..2^20-1 |
 | Demux | Isolated `Demux`: `len < 32768 && payload[0]=='{' && no 0x00` → JSON |
-| Hello | Always `type,pixelsWide,pixelsHigh,scale,device,id,pv`. Optional `maxEncode*` and `addrs`. No `cursorPort` in this phase. |
+| Hello | Always `type,pixelsWide,pixelsHigh,scale,device,id,pv`. Optional `maxEncode*`, `addrs`, and `cursorPort`. |
 | Newcomer | Immediate `hello`. Adopt if idle; otherwise park 3 s until ≥1 byte, then swap. |
 | Liveness | Receiver `ping` every 2 s. Drop after 8 s without inbound bytes (`watchdog`). Never reply `pong` to the sender's `ping`. |
-| Video | Annex-B, 4-byte start codes, SPS-derived size, async `MediaCodec` + `SurfaceView`. |
+| Video | Annex-B, 4-byte start codes, optional `{cap,snd}` telemetry prefix (hand-parsed), SPS-derived size, async `MediaCodec` + `SurfaceView`. |
+| Buffering | Listen `SO_RCVBUF` is 1 MiB (inherited at accept). Decoder queue: usb 3 frames / wifi 8 frames, 12 MiB bytes cap. |
 | Input | One-finger `touch` (normalized in the letterboxed video rect). Two-finger `scroll` in video pixels, natural sign. |
 | USB class | Peer 127.0.0.1 / ::1 / ::ffff:127.0.0.1 → `usb`, else `wifi`. |
 
 Unknown control `type` values are ignored (logged once per type).
+
+## Cursor UDP (PROTOCOL.md §6.3)
+
+Wi-Fi sessions bind UDP on TCP port + 1 (`9001`, or an ephemeral port if taken) and advertise it as `hello.cursorPort`. Loopback / USB (`adb` tunnel cannot carry UDP) omits `cursorPort` so the sender stays on TCP. Datagrams are one `cursor` JSON each (no length prefix) with `s`. One sequence tracker is shared by TCP and UDP; `s <= last` is dropped; a TCP `cursor` without `s` applies unconditionally. The first accepted datagram of a remote host+port flow sends `cursorAck` over TCP. Turning `cursorUdp` off mid-session closes the socket and re-hellos without the field.
+
+## S Pen (PROTOCOL.md §6.1)
+
+`TOOL_TYPE_STYLUS` / `TOOL_TYPE_ERASER` map to `pencil` (`down|move|up`) and hover to `proximity` / `pencil phase:hover`. Coordinates use the same aspect-fit video space as touch. `azimuth = wrapPi(AXIS_ORIENTATION - π/2)` (Android 0 = toward the top of the screen; protocol 0 = toward +x). `altitude = π/2 - AXIS_TILT`. `rotation` is always 0. Stylus buttons are ignored. Gated on `welcome.pv >= 3`; before `welcome` or against an older sender the stylus degrades to `touch` (never `pencil`/`proximity`).
+
+## Stats
+
+Every 5 s the receiver sends `stats` and (if enabled) paints a top-left overlay:
+
+`transport, fps, mbps, e2e50, e2e95, ph50, ph95, dec50, stalls, queue, drops, offsetKnown, cursorUpdates, cursorLost`
+
+`e2e*` are omitted until the ping/pong offset is known: `e2e = renderedAtPhoneMs - (cap - offset)`. `ph` is arrive→render; `dec` is queuedToCodec→render. Rolling window is the last ~300 frames. `fps` is rendered frames in the 5 s window.
+
+### Latency placeholder (SM-X800, stock Mac 1.19.0, Wi-Fi)
+
+Fill in after a settled session with overlay on:
+
+| | e2e50 | e2e95 | ph50 | dec50 | fps | mbps |
+|---|---|---|---|---|---|---|
+| Wi-Fi | — | — | — | — | — | — |
+| USB | — | — | — | — | — | — |
 
 ## Logs
 

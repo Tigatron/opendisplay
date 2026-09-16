@@ -30,6 +30,7 @@ class NewcomerParkingTest {
         assertEquals(1L, adopt.closeSessionId)
         assertEquals(3, adopt.initialBytes.size)
         assertEquals(NewcomerMachine.State.Live(2), machine.state)
+        assertTrue(machine.onBytes(2, byteArrayOf(9)).isEmpty())
     }
 
     @Test

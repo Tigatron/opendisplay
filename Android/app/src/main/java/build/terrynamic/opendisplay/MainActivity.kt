@@ -36,8 +36,8 @@ class MainActivity : ComponentActivity() {
         applyCutoutMode()
         requestNotifyPermission()
         ReceiverService.start(this)
-        controller.startListening()
         publishPanelSize()
+        controller.startListening()
 
         setContent {
             val state by controller.uiState.collectAsState()

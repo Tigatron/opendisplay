@@ -55,8 +55,7 @@ class NewcomerMachine(
     fun onBytes(connectionId: Long, bytes: ByteArray): List<Action> {
         if (bytes.isEmpty()) return emptyList()
         return when (val current = state) {
-            State.Idle -> emptyList()
-            is State.Live -> if (connectionId == current.sessionId) emptyList() else emptyList()
+            State.Idle, is State.Live -> emptyList()
             is State.Parking -> {
                 if (connectionId !in current.newcomers) return emptyList()
                 val actions = mutableListOf<Action>(Action.CancelTimeout(connectionId))

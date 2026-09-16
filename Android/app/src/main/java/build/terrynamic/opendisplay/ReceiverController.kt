@@ -11,6 +11,7 @@ import build.terrynamic.opendisplay.link.LinkPolicy
 import build.terrynamic.opendisplay.protocol.ClockOffset
 import build.terrynamic.opendisplay.protocol.ControlMessages
 import build.terrynamic.opendisplay.protocol.InboundControl
+import build.terrynamic.opendisplay.protocol.PanelReadyGate
 import build.terrynamic.opendisplay.protocol.SenderHealth
 import build.terrynamic.opendisplay.protocol.WireMessage
 import build.terrynamic.opendisplay.protocol.WireProtocol
@@ -66,10 +67,7 @@ class ReceiverController(private val app: Application) {
     private var lastAdvertisedAddrs: List<String> = emptyList()
     private var lastHelloWide = 0
     private var lastHelloHigh = 0
-    private var panelWide = 1920
-    private var panelHigh = 1080
-    private var panelScale = 2f
-    private var smallestWidthDp = 600
+    private val panel = PanelReadyGate()
     private var lastPingAt = 0L
     private var lastStatsAt = 0L
     private var windowStartMs = 0L
@@ -126,8 +124,7 @@ class ReceiverController(private val app: Application) {
         handler.post {
             if (stopped || asleep) return@post
             listeningEnabled = true
-            if (listener != null) return@post
-            startListenerLocked()
+            maybeStartListenerLocked()
             handler.removeCallbacks(livenessTick)
             handler.post(livenessTick)
         }
@@ -145,8 +142,13 @@ class ReceiverController(private val app: Application) {
     fun resumeFromSleep() {
         handler.post {
             asleep = false
-            if (listeningEnabled) startListenerLocked()
-            _state.update { it.copy(status = "Listening on :${WireProtocol.DEFAULT_PORT}") }
+            if (listeningEnabled) maybeStartListenerLocked()
+            _state.update {
+                it.copy(
+                    status = if (panel.isReady) "Listening on :${WireProtocol.DEFAULT_PORT}"
+                    else "Waiting for panel size",
+                )
+            }
         }
     }
 
@@ -168,12 +170,9 @@ class ReceiverController(private val app: Application) {
 
     fun updatePanel(width: Int, height: Int, scale: Float, smallestWidthDp: Int) {
         handler.post {
-            if (width <= 0 || height <= 0) return@post
-            val changed = panelWide != width || panelHigh != height
-            panelWide = width
-            panelHigh = height
-            panelScale = scale
-            this.smallestWidthDp = smallestWidthDp
+            val changed = panel.update(width, height, scale, smallestWidthDp)
+            if (!panel.isReady) return@post
+            maybeStartListenerLocked()
             if (changed && listener?.liveConnection != null) {
                 sendHello()
             }
@@ -231,11 +230,22 @@ class ReceiverController(private val app: Application) {
     }
 
     fun helloJson(): JSONObject {
+        if (!panel.isReady) {
+            val ready = PanelReadyGate.awaitReady(
+                isReady = { panel.isReady },
+                timeoutMs = PanelReadyGate.HELLO_WAIT_MS,
+                nowMs = { SystemClock.elapsedRealtime() },
+                sleepMs = { slice -> Thread.sleep(slice) },
+            )
+            if (!ready) {
+                throw IllegalStateException("panel size unknown — refusing placeholder hello")
+            }
+        }
         val settings = _state.value.settings
         val factor = settings.virtualDesktop.factor
-        val wide = even((panelWide * factor).roundToInt())
-        val high = even((panelHigh * factor).roundToInt())
-        val ceiling = DecodeCeilingResolver.resolve(settings.decodeCeiling, panelWide, panelHigh)
+        val wide = even((panel.wide * factor).roundToInt())
+        val high = even((panel.high * factor).roundToInt())
+        val ceiling = DecodeCeilingResolver.resolve(settings.decodeCeiling, panel.wide, panel.high)
         val addrs = linkPolicy.addrs()
         lastHelloWide = wide
         lastHelloHigh = high
@@ -243,13 +253,20 @@ class ReceiverController(private val app: Application) {
         return ControlMessages.hello(
             pixelsWide = wide,
             pixelsHigh = high,
-            scale = panelScale,
-            device = if (smallestWidthDp >= 600) "AndroidTablet" else "Android",
+            scale = panel.scale,
+            device = if (panel.smallestWidthDp >= 600) "AndroidTablet" else "Android",
             installId = installId,
             maxEncodeWide = ceiling?.wide,
             maxEncodeHigh = ceiling?.high,
             addrs = addrs,
         )
+    }
+
+    private fun maybeStartListenerLocked() {
+        if (!PanelReadyGate.shouldBindListener(listeningEnabled, panel.isReady, listener != null)) {
+            return
+        }
+        startListenerLocked()
     }
 
     private fun startListenerLocked() {
@@ -260,14 +277,14 @@ class ReceiverController(private val app: Application) {
                 override fun onAdopted(
                     connection: FramedConnection,
                     generation: Long,
-                    initialPayloads: List<ByteArray>,
+                    initialBytes: ByteArray,
                     transport: String,
-                ) {
-                    listener?.liveConnection?.onFrame = { payload ->
+                ): (ByteArray) -> Unit {
+                    adoptSession(connection, generation, transport)
+                    return { payload ->
                         bytesThisWindow.addAndGet(payload.size.toLong())
                         handleFrame(payload)
                     }
-                    handler.post { handleAdopted(connection, generation, transport) }
                 }
 
                 override fun onSessionClosed(generation: Long) {
@@ -316,7 +333,7 @@ class ReceiverController(private val app: Application) {
         }
     }
 
-    private fun handleAdopted(connection: FramedConnection, generation: Long, transport: String) {
+    private fun adoptSession(connection: FramedConnection, generation: Long, transport: String) {
         sessionGeneration = generation
         lastCursorSeq = 0
         clock.reset()
@@ -449,8 +466,12 @@ class ReceiverController(private val app: Application) {
     }
 
     private fun sendHello() {
-        listener?.sendControl(OutboundKind.HELLO, helloJson())
-        Log.i(WireProtocol.LOG_TAG, "hello sent")
+        val json = helloJson()
+        listener?.sendControl(OutboundKind.HELLO, json)
+        Log.i(
+            WireProtocol.LOG_TAG,
+            "hello sent ${json.optInt("pixelsWide")}x${json.optInt("pixelsHigh")}",
+        )
     }
 
     private fun sendStats() {

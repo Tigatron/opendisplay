@@ -2,11 +2,10 @@ package build.terrynamic.opendisplay.transport
 
 import android.os.SystemClock
 import android.util.Log
-import build.terrynamic.opendisplay.protocol.ControlMessages
 import build.terrynamic.opendisplay.protocol.WireProtocol
 import org.json.JSONObject
 import java.io.IOException
-import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
@@ -24,12 +23,13 @@ class ReceiverListener(
     private val onSession: SessionCallbacks,
 ) {
     interface SessionCallbacks {
+        /** Reset session state and return the frame handler before the reader starts. */
         fun onAdopted(
             connection: FramedConnection,
             generation: Long,
-            initialPayloads: List<ByteArray>,
+            initialBytes: ByteArray,
             transport: String,
-        )
+        ): (ByteArray) -> Unit
         fun onSessionClosed(generation: Long)
         fun onListening(bound: Boolean)
         fun onWatchdog()
@@ -54,8 +54,9 @@ class ReceiverListener(
         scheduler = Executors.newSingleThreadScheduledExecutor { r ->
             Thread(r, "od-park").apply { isDaemon = true }
         }
-        val serverSocket = ServerSocket(port, 8, InetAddress.getByName("0.0.0.0")).apply {
+        val serverSocket = ServerSocket().apply {
             reuseAddress = true
+            bind(InetSocketAddress("0.0.0.0", port), 8)
         }
         server = serverSocket
         acceptThread = Thread({ acceptLoop(serverSocket) }, "od-accept").apply {
@@ -136,9 +137,13 @@ class ReceiverListener(
 
     private fun sendHelloSync(socket: Socket) {
         try {
-            val payload = helloProvider().toString().toByteArray(Charsets.UTF_8)
+            val json = helloProvider()
+            val payload = json.toString().toByteArray(Charsets.UTF_8)
             Framer.write(socket.getOutputStream(), payload)
-            Log.i(WireProtocol.LOG_TAG, "hello sent")
+            Log.i(
+                WireProtocol.LOG_TAG,
+                "hello sent ${json.optInt("pixelsWide")}x${json.optInt("pixelsHigh")}",
+            )
         } catch (e: Exception) {
             Log.w(WireProtocol.LOG_TAG, "hello send failed: ${e.message}")
         }
@@ -194,7 +199,11 @@ class ReceiverListener(
     private fun adopt(id: Long, initialBytes: ByteArray, closeOld: Long?) {
         if (closeOld != null && closeOld != id) {
             liveConnection?.let {
-                Log.i(WireProtocol.LOG_TAG, "newcomer proved itself — adopting it as the session")
+                Log.i(
+                    WireProtocol.LOG_TAG,
+                    "newcomer proved itself — adopting it as the session " +
+                        "(${initialBytes.size} initial bytes)",
+                )
                 it.close()
                 onSession.onSessionClosed(it.generation)
             }
@@ -215,7 +224,7 @@ class ReceiverListener(
             transport = connection.transport,
         )
         liveConnection = session
-        onSession.onAdopted(connection, id, emptyList(), connection.transport)
+        session.onFrame = onSession.onAdopted(connection, id, initialBytes, connection.transport)
         session.writer = Thread({ writeLoop(session) }, "od-write").apply {
             isDaemon = true
             start()
@@ -238,16 +247,8 @@ class ReceiverListener(
             while (session.alive.get() && session.connection.isOpen) {
                 val payload = session.connection.readFrame()
                 val handler = session.onFrame
-                if (handler == null) {
-                    var waited = 0
-                    while (session.onFrame == null && session.alive.get() && waited < 50) {
-                        Thread.sleep(10)
-                        waited++
-                    }
-                    session.onFrame?.invoke(payload) ?: continue
-                } else {
-                    handler(payload)
-                }
+                    ?: throw IllegalStateException("reader started without a frame handler")
+                handler(payload)
             }
         } catch (e: Exception) {
             if (session.alive.get()) {

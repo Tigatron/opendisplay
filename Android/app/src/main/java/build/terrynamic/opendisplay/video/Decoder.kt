@@ -5,11 +5,14 @@ import android.media.MediaFormat
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.util.Log
 import android.view.Surface
 import build.terrynamic.opendisplay.protocol.WireProtocol
 import java.nio.ByteBuffer
 import java.util.ArrayDeque
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -66,22 +69,43 @@ class Decoder(
     }
 
     fun reset() {
-        handler.post {
-            synchronized(lock) {
-                queue.clear()
-                queuedBytes = 0
-                droppingUntilIdr = false
-            }
-            stopCodecLocked()
-            sps = null
-            pps = null
-            awaitingIdr = true
-            videoWidth = 0
-            videoHeight = 0
-            presentationIndex = 0
-            stalls.set(0)
-            drops.set(0)
+        if (released.get()) return
+        if (Looper.myLooper() == handler.looper) {
+            resetOnWorker()
+            return
         }
+        val done = CountDownLatch(1)
+        handler.post {
+            try {
+                resetOnWorker()
+            } finally {
+                done.countDown()
+            }
+        }
+        try {
+            if (!done.await(2, TimeUnit.SECONDS)) {
+                Log.w(WireProtocol.LOG_TAG, "decoder reset timed out")
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    private fun resetOnWorker() {
+        synchronized(lock) {
+            queue.clear()
+            queuedBytes = 0
+            droppingUntilIdr = false
+        }
+        stopCodecLocked()
+        sps = null
+        pps = null
+        awaitingIdr = true
+        videoWidth = 0
+        videoHeight = 0
+        presentationIndex = 0
+        stalls.set(0)
+        drops.set(0)
     }
 
     fun release() {

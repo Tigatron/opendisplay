@@ -7,11 +7,13 @@ The stock sender can browse `_opensidecar._tcp` and, once connected, probe `hell
 1. Watches `adb track-devices -l` for authorized devices that have `com.terrynamic.opendisplay` installed.
 2. Forwards `127.0.0.1:<P>` → device TCP 9000 (`P` is 9000 when free, otherwise 9010+).
 3. Probes the tunnel for one length-prefixed `hello` frame.
-4. Publishes a **loopback-only** Bonjour proxy (`lo0`) so the stock app discovers `127.0.0.1:<P>`.
+4. Publishes a **loopback-only** Bonjour proxy (`lo0`) so the stock app discovers `127.0.0.1:<P>` (suppressed while Manual mode is on).
 5. Optionally heartbeats the receiver so a live Wi-Fi session can B2-upgrade onto the cable path.
-6. Optionally writes the stock app's `host`/`port` defaults so it auto-dials the tunnel.
+6. Optionally enters **Manual mode**: writes the stock app's `host`/`port` defaults (and clears `usb:first` from `usbDisabled`) so it auto-dials the tunnel without Bonjour.
 
 The upstream `Mac/` tree is not modified. Helper bundle id: `com.terrynamic.opendisplay.usbhelper`.
+
+Handoff (done / in progress / next, plus E2E scores): [../HANDOFF.md](../HANDOFF.md).
 
 ## Requirements
 
@@ -71,9 +73,9 @@ macOS keys that permission to the **bundle id**. After renaming from `build.terr
 
 ## Connection modes
 
-Three independent ways the stock sender can reach the USB tunnel. B1 is always on once a device is ready; B2 and defaults are toggles.
+Three independent ways the stock sender can reach the USB tunnel. B1 is on once a device is ready **unless Manual mode (B0) is enabled**; B2 and B0 are toggles.
 
-### B1 — Bonjour proxy (always)
+### B1 — Bonjour proxy (on unless Manual mode)
 
 Loopback-only DNS-SD so the stock app's browser finds the tablet as a normal receiver.
 
@@ -117,18 +119,29 @@ The receiver then advertises `hello.addrs: ["127.0.0.1"]`. The stock sender's ca
 
 Disable with **Send USB heartbeat (B2 auto-upgrade)** (`sendHeartbeat`) if you only want a fresh Bonjour connect. Enabling the toggle while a :9000 tunnel is already up starts heartbeats immediately.
 
-### Optional defaults auto-connect (default off, port 9000 only)
+### B0 — Manual mode (default off, port 9000 only)
 
-**Off by default.** Writes the stock app's escape-hatch keys:
+**Off by default.** This is Manual mode, not a Bonjour helper. While enabled on a :9000 tunnel the helper:
+
+1. Writes the stock app's escape-hatch keys:
 
 ```
 defaults write com.peetzweg.opensidecar.mac host 127.0.0.1
 defaults write com.peetzweg.opensidecar.mac port 9000
 ```
 
-and deletes them when the 9000 tunnel goes down, the toggle is turned off, or the helper quits. The stock app reads `host`/`port` at launch (and as a running-app escape hatch) and auto-dials `usb:first` over TCP.
+2. Removes `usb:first` from that domain's `usbDisabled` array (the stock app silently skips Manual if that entry is present). Other `usbDisabled` ids are left alone. An empty remainder is written back as `-array`.
+3. **Does not publish** the lo0 Bonjour proxy, and withdraws it if it was already up. The stock app then cannot redial `wifi:SM-X800 (USB)`. Remembered WiFi (`wifi:BUILD.TERRYNAMIC`) may still dial the tablet's real address; the receiver's USB gating refuses those with `ECONNREFUSED` and the stock app stops after three refusals. Convergence is a single `usb:first` Manual session (`Manual (127.0.0.1:9000)`).
 
-Writing while OpenDisplay is **not running** is intended — keep the behavior simple; the stock app picks the keys up on next launch. This mutates another app's preferences. Enabling `writeOpenDisplayDefaults` while a :9000 tunnel is already up writes immediately.
+This does **not** rewrite `wifiRemembered` and does **not** rely on the stock app's `keeping the cable, dropping wifi:…` dedupe (that path only drops a WiFi twin of a usbmux / matching-id USB session).
+
+Turning the toggle off deletes `host`/`port` (existing behavior) and republishes the B1 proxy. Heartbeat (B2) is independent. `usbDisabled` is not restored when B0 is off — that remains the stock app's bookkeeping.
+
+Writing while OpenDisplay is **not running** is intended — the stock app picks the keys up on next launch. This mutates another app's preferences. Enabling `writeOpenDisplayDefaults` while a :9000 tunnel is already up writes immediately and withdraws Bonjour.
+
+Round 8 (2026-09-17): Manual connects in **0.178 s**, zero session churn in 60 s, disable → republish ~**2.7 s**. Hot-toggle (live B1 session → enable B0, no app restart) reaches Manual in ~**1.8 s**.
+
+**Stock-app caveats** (not helper bugs; full notes in [HANDOFF.md](../HANDOFF.md) §13): unplug → Wi-Fi fallback only works if the session *started* on `BUILD.TERRYNAMIC`. A session started on `<MODEL> (USB)` dies with the proxy and does not mid-session redial Wi-Fi. The menu label does not follow the real path (`wifi:…` can be on the tunnel) — check helper logs / receiver `transport=`. After `device gone`, redial of a reappearing proxy is inconsistent; relaunch reconnects in ~2.5 s.
 
 ## Settings
 
@@ -137,7 +150,7 @@ Writing while OpenDisplay is **not running** is intended — keep the behavior s
 | adb path override | `adbPathOverride` | string | empty | Then `$PATH`, `/opt/homebrew/bin/adb`, `~/Library/Android/sdk/platform-tools/adb`, `$ANDROID_HOME/platform-tools/adb` |
 | Launch receiver app on attach | `launchReceiverOnAttach` | bool | true | `am start -n com.terrynamic.opendisplay/.MainActivity` |
 | Send USB heartbeat (B2 auto-upgrade) | `sendHeartbeat` | bool | true | B2; only when `P == 9000` |
-| Auto-connect running Mac app | `writeOpenDisplayDefaults` | bool | false | Writes OpenDisplay `host`/`port` even if that app is not running |
+| Manual mode (host/port, no Bonjour) | `writeOpenDisplayDefaults` | bool | false | Writes OpenDisplay `host`/`port`, clears `usb:first` from `usbDisabled`, suppresses the lo0 proxy |
 | Start at login | `startAtLogin` | bool | false | `SMAppService.mainApp` (only from `/Applications`) |
 
 UserDefaults domain is the helper bundle id: **`com.terrynamic.opendisplay.usbhelper`**. The engine observes `UserDefaults.didChangeNotification` and periodically reloads, so `defaults write` applies to a live helper.
@@ -203,5 +216,5 @@ If 9000 was already forwarded for that serial: `INFO reusing existing forward <S
 
 5. **B1:** stock OpenDisplay lists `<MODEL> (USB)`. Connect. Sender log: `connection path to <MODEL> (USB): lo0`.
 6. **B2:** start a Wi-Fi session first, then attach USB with `sendHeartbeat` on and `port=9000`. Session should migrate onto the tunnel without a new click.
-7. **Defaults auto-connect (optional):** `defaults write com.terrynamic.opendisplay.usbhelper writeOpenDisplayDefaults -bool true`. Helper writes `com.peetzweg.opensidecar.mac` `host`/`port` even if OpenDisplay is not running. Launch or focus the stock app and it should dial `127.0.0.1:9000`.
-8. Quit the helper (menu **Quit** or SIGTERM). Log: `INFO helper stopping — tearing down N device(s)`. OpenDisplay `host`/`port` keys are deleted if this helper wrote them. The USB Bonjour name disappears.
+7. **Manual mode (optional):** `defaults write com.terrynamic.opendisplay.usbhelper writeOpenDisplayDefaults -bool true`. Helper writes `host`/`port`, clears `usb:first` from `usbDisabled`, and withholds the lo0 proxy (`phase=ready … name=Manual (no bonjour)`). Launch the stock app and it should dial `Manual (127.0.0.1:9000)` without a surviving `SM-X800 (USB)` Bonjour session.
+8. Quit the helper (menu **Quit** or SIGTERM). Log: `INFO helper stopping — tearing down N device(s)`. OpenDisplay `host`/`port` keys are deleted if this helper wrote them. The USB Bonjour name disappears (or was already withdrawn in Manual mode).

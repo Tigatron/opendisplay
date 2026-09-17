@@ -2,6 +2,8 @@
 
 Receiver for the stock OpenDisplay Mac sender (`pv` 3). Listens on TCP 9000, advertises `_opensidecar._tcp.`, and decodes the H.264 Annex-B stream described in [PROTOCOL.md](../PROTOCOL.md).
 
+Handoff (what is done, what is in flight, what is next): [HANDOFF.md](../HANDOFF.md).
+
 Package / `applicationId`: `com.terrynamic.opendisplay`. Default Bonjour name: `BUILD.TERRYNAMIC`.
 
 ## Build
@@ -46,7 +48,7 @@ adb shell am broadcast \
 
 While that heartbeat is fresh (`port == 9000` and within `ttlMs`, default 15 s), `hello.addrs` is `["127.0.0.1"]` so the stock sender can probe the cable path (PROTOCOL.md §6.4). When it expires, `addrs` is omitted.
 
-The stock Mac app remembers **both** Bonjour entries (`SM-X800 (USB)` via the helper proxy and `BUILD.TERRYNAMIC` on Wi-Fi) and will auto-dial both. The receiver therefore prefers USB: while the live session's peer is loopback it rebinds TCP 9000 from `0.0.0.0` to `127.0.0.1` so Wi-Fi dials get `ECONNREFUSED` and the Mac drops that session after three refusals. The loopback listener stays up for helper probes and cable upgrades. When the USB session ends (EOF/RST/watchdog) — not when the 15 s heartbeat expires — it immediately rebinds `0.0.0.0:9000` so Wi-Fi fallback can redial within ~1–2 s. NSD stays registered the whole time. A Wi-Fi newcomer that already passed `accept` before the swap still follows the normal 3 s parking rule.
+The stock Mac app remembers **both** Bonjour entries (`SM-X800 (USB)` via the helper proxy and `BUILD.TERRYNAMIC` on Wi-Fi) and will auto-dial both. The receiver therefore prefers USB: while the live session's peer is loopback it rebinds TCP 9000 from `0.0.0.0` to `127.0.0.1` so Wi-Fi dials get `ECONNREFUSED` and the Mac drops that session after three refusals. The loopback listener stays up for helper probes and cable upgrades. When the USB session ends (EOF/RST/watchdog) — not when the 15 s heartbeat expires — it immediately rebinds `0.0.0.0:9000`. The stock app redials Wi-Fi within ~1–2 s **only if the session started on `BUILD.TERRYNAMIC`** (then migrated). A session that started on `SM-X800 (USB)` waits for that proxy name and does not switch mid-session. NSD stays registered the whole time. A Wi-Fi newcomer that already passed `accept` before the swap still follows the normal 3 s parking rule.
 
 Do not change the tablet USB mode (`svc usb setFunctions`). Stop any other app bound to :9000 before testing:
 
@@ -115,16 +117,23 @@ Every 5 s the receiver sends `stats` (first report waits for a full 5 s window a
 
 `e2e*` are omitted until the ping/pong offset is known: `e2e = renderedAtPhoneMs - (cap - offset)`. `ph` is arrive→render; `dec` is queuedToCodec→render. Rolling window is the last ~300 frames. `fps` is rendered frames in the 5 s window.
 
-### Latency placeholder (SM-X800, stock Mac 1.19.0, Wi-Fi)
+### Latency (SM-X800, stock Mac 1.19.0)
 
-Fill in after a settled session with overlay on:
+USB rows: E2E round 6/7, `-testPattern YES`, `c2.qti.avc.decoder`, `lowLatency=true`. Receiver `stalls/drops/queue=0`. Default `auto` keeps native 2800×1752 (~40 fps, stock encoder bound); set `decodeCeiling=1920x1080` for ~56 fps. Wi-Fi motion still unmeasured (idle desktop is not a target).
 
 | | e2e50 | e2e95 | ph50 | dec50 | fps | mbps |
 |---|---|---|---|---|---|---|
-| Wi-Fi | — | — | — | — | — | — |
-| USB | — | — | — | — | — | — |
+| Wi-Fi (motion) | — | — | — | — | — | — |
+| USB (test pattern) | 31 | 34 | 12 | 12 | 37–42 | 1.1–1.3 |
+| USB (test pattern, decodeCeiling=1920x1080) | 28 | 31 | 10 | 9 | ~56 | ~1.0 |
+
+## Known limitations
+
+- **Wi-Fi fallback is only for sessions that started on Wi-Fi.** If the stock Mac app connected via the helper's `SM-X800 (USB)` name, unplugging ends that session and the app waits for that name — it does not redial `BUILD.TERRYNAMIC` in the middle of a session. Start on Wi-Fi (then let the helper migrate) if you want unplug → Wi-Fi. Cursor UDP (`9001`) is the same: advertised only to non-loopback peers, so it needs a Wi-Fi-originated session.
+- **The stock app's session label does not follow the real path.** `wifi:BUILD.TERRYNAMIC` can be flowing over the USB tunnel and still say `wifi:`. Trust logcat / `transport=`, not the menu name.
 
 ## Logs
 
 - Tablet: `adb logcat -s OpenDisplay`
+- Sleep / wake: `sleep session — liveness sends paused`, `resume from sleep (event)` (broadcast / `onResume`), `resume from sleep (device-state)` (tick self-heal if unlock signals were missed)
 - Stock Mac sender: `~/Library/Logs/OpenDisplay/opendisplay.log` (`phone hello`, `virtual display created`, `stream capped at`, `Extending to AndroidTablet`)

@@ -177,6 +177,16 @@ please report issues with them in their own repositories. Listing them here
 also says nothing about our own plans: an official OpenDisplay app may still
 ship for any of these platforms later.
 
+**In this repository (work in progress)**
+
+* `Android/` — a Kotlin Android receiver for tablets (developed against a
+  Galaxy Tab S8+ / SM-X800) that works with the unmodified Mac app over
+  WiFi or USB. See [Android/README.md](Android/README.md).
+* `MacHelper/` — a menu-bar companion that keeps an `adb forward` tunnel to
+  the Android device and publishes a loopback-only Bonjour proxy so the
+  stock Mac app discovers the USB path automatically. See
+  [MacHelper/README.md](MacHelper/README.md).
+
 ## How it works
 
 ```

@@ -9,7 +9,8 @@ final class OpenDisplayDefaultsTests: XCTestCase {
             log: { lines.append($0) }
         )
         XCTAssertEqual(lines, [
-            "wrote OpenDisplay defaults host=127.0.0.1 port=9000 (domain com.peetzweg.opensidecar.mac) trigger=tunnel ready"
+            "wrote OpenDisplay defaults host=127.0.0.1 port=9000 (domain com.peetzweg.opensidecar.mac) trigger=tunnel ready",
+            "removed usb:first from usbDisabled (domain com.peetzweg.opensidecar.mac) trigger=tunnel ready"
         ])
 
         lines.removeAll()
@@ -19,9 +20,28 @@ final class OpenDisplayDefaultsTests: XCTestCase {
             log: { lines.append($0) }
         )
         XCTAssertEqual(lines, [
-            OpenDisplayDefaults.wroteLine(trigger: .settingEnabled)
+            OpenDisplayDefaults.wroteLine(trigger: .settingEnabled),
+            OpenDisplayDefaults.usbDisabledRemovedLine(trigger: .settingEnabled)
         ])
         XCTAssertTrue(lines[0].contains("trigger=setting enabled"))
+        XCTAssertTrue(lines[1].contains("usb:first"))
+    }
+
+    func testWritePathEmitsHostPortAndUsbDisabledCleanup() {
+        var written: [String]?
+        var lines: [String] = []
+        OpenDisplayDefaults.writeTunnel(
+            trigger: .settingEnabled,
+            performWrites: false,
+            usbDisabledEntries: ["usb:other", "usb:first"],
+            writeUsbDisabled: { written = $0 },
+            log: { lines.append($0) }
+        )
+        XCTAssertEqual(lines, [
+            OpenDisplayDefaults.wroteLine(trigger: .settingEnabled),
+            OpenDisplayDefaults.usbDisabledRemovedLine(trigger: .settingEnabled)
+        ])
+        XCTAssertNil(written, "performWrites=false must not invoke the writer")
     }
 
     func testDeleteCallsLogHookWithTrigger() {
@@ -37,6 +57,78 @@ final class OpenDisplayDefaultsTests: XCTestCase {
                 "deleted OpenDisplay defaults host/port (domain com.peetzweg.opensidecar.mac) trigger=\(trigger.rawValue)"
             ])
         }
+    }
+}
+
+final class UsbDisabledFilterTests: XCTestCase {
+    func testRemovesOnlyUsbFirstAmongOthers() {
+        XCTAssertEqual(
+            UsbDisabledFilter.removingFirst(["usb:abcd", "usb:first", "usb:efgh"]),
+            ["usb:abcd", "usb:efgh"]
+        )
+    }
+
+    func testAbsentIsNoOp() {
+        XCTAssertNil(UsbDisabledFilter.removingFirst(["usb:abcd"]))
+        XCTAssertNil(UsbDisabledFilter.removingFirst([]))
+    }
+
+    func testOnlyUsbFirstBecomesEmptyArray() {
+        XCTAssertEqual(UsbDisabledFilter.removingFirst(["usb:first"]), [])
+    }
+
+    func testClearUsbFirstNoOpWhenAbsent() {
+        var written: [String]?
+        var lines: [String] = []
+        OpenDisplayDefaults.clearUsbFirst(
+            trigger: .settingEnabled,
+            performWrites: true,
+            entries: ["usb:abcd"],
+            writeUsbDisabled: { written = $0 },
+            log: { lines.append($0) }
+        )
+        XCTAssertNil(written)
+        XCTAssertTrue(lines.isEmpty)
+    }
+
+    func testClearUsbFirstWritesEmptyArray() {
+        var written: [String]?
+        OpenDisplayDefaults.clearUsbFirst(
+            trigger: .tunnelReady,
+            performWrites: true,
+            entries: ["usb:first"],
+            writeUsbDisabled: { written = $0 },
+            log: { _ in }
+        )
+        XCTAssertEqual(written, [])
+    }
+
+    func testClearUsbFirstKeepsOtherEntries() {
+        var written: [String]?
+        OpenDisplayDefaults.clearUsbFirst(
+            trigger: .settingEnabled,
+            performWrites: true,
+            entries: ["usb:abcd", "usb:first"],
+            writeUsbDisabled: { written = $0 },
+            log: { _ in }
+        )
+        XCTAssertEqual(written, ["usb:abcd"])
+    }
+}
+
+final class PlistStringArrayTests: XCTestCase {
+    func testParsesDefaultsReadArray() {
+        let raw = """
+        (
+            "usb:first",
+            "usb:R52T304Z7VD"
+        )
+        """
+        XCTAssertEqual(PlistStringArray.parse(raw), ["usb:first", "usb:R52T304Z7VD"])
+    }
+
+    func testParsesEmptyArray() {
+        XCTAssertEqual(PlistStringArray.parse("(\n)"), [])
     }
 }
 

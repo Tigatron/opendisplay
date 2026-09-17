@@ -31,8 +31,8 @@ struct SettingsView: View {
             Section("On attach") {
                 Toggle("Launch receiver app on attach", isOn: $settings.launchReceiverOnAttach)
                 Toggle("Send USB heartbeat (B2 auto-upgrade)", isOn: $settings.sendHeartbeat)
-                Toggle("Auto-connect running Mac app (writes OpenDisplay preferences)", isOn: $settings.writeOpenDisplayDefaults)
-                Text("Writes host=127.0.0.1 and port=9000 into \(HelperConstants.openDisplayDefaultsDomain). The stock app reads those keys at launch, so writing while OpenDisplay is not running is intended. Enabling this while a :9000 tunnel is already up writes immediately; turning it off deletes the keys.")
+                Toggle("Manual mode (host/port, no Bonjour)", isOn: $settings.writeOpenDisplayDefaults)
+                Text("Writes host=127.0.0.1 and port=9000 into \(HelperConstants.openDisplayDefaultsDomain), clears usb:first from usbDisabled, and withdraws the lo0 Bonjour proxy so the stock app dials Manual. Enabling this on a live :9000 tunnel applies immediately; turning it off deletes the keys and republishes Bonjour.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

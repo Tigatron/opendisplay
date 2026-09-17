@@ -59,7 +59,11 @@ private struct DeviceMenuRow: View {
             Text("\(device.serial) · \(device.phase.rawValue)\(device.tunnelPort.map { " · :\($0)" } ?? "")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if let name = device.bonjourName {
+            if device.manualMode {
+                Text("Manual mode · no Bonjour · heartbeat \(device.heartbeatOn ? "on" : "off")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if let name = device.bonjourName {
                 Text("\(name) · heartbeat \(device.heartbeatOn ? "on" : "off")")
                     .font(.caption)
                     .foregroundStyle(.secondary)

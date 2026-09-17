@@ -27,15 +27,22 @@ struct DeviceRowState: Equatable, Identifiable {
     var heartbeatOn: Bool
     var lastError: String?
     var wroteDefaults: Bool
+    var manualMode: Bool
     var hello: HelloMessage?
 
     var summary: String {
         var parts = [adbState]
         if let tunnelPort { parts.append(":\(tunnelPort)") }
-        if let bonjourName { parts.append(bonjourName) }
+        if manualMode {
+            parts.append(DeviceTunnel.manualPublicationName)
+        } else if let bonjourName {
+            parts.append(bonjourName)
+        }
         parts.append(heartbeatOn ? "heartbeat on" : "heartbeat off")
         return parts.joined(separator: " · ")
     }
+
+    var bonjourPublished: Bool { bonjourName != nil && !manualMode }
 }
 
 struct TunnelHooks {
@@ -62,6 +69,8 @@ struct TunnelHooks {
 /// or mDNS. `shouldAbort` is checked between steps so a disconnect mid-attach
 /// drops the in-flight work instead of publishing a stale proxy.
 final class DeviceTunnel {
+    static let manualPublicationName = "Manual (no bonjour)"
+
     private(set) var state: DeviceRowState
     var hooks: TunnelHooks
     var settings: SettingsSnapshot
@@ -86,6 +95,7 @@ final class DeviceTunnel {
             heartbeatOn: false,
             lastError: nil,
             wroteDefaults: false,
+            manualMode: false,
             hello: nil
         )
         self.settings = settings
@@ -195,7 +205,10 @@ final class DeviceTunnel {
         return state
     }
 
-    /// Apply a new settings snapshot to a live tunnel (heartbeat / defaults).
+    /// Apply a new settings snapshot to a live tunnel (heartbeat / defaults /
+    /// Manual-mode Bonjour withhold). HelperEngine must invoke this on `io`
+    /// (`applySettingsOnIO`): `republishBonjour` → `hooks.publish` blocks the
+    /// caller while hopping onto the engine queue.
     func applySettings(_ new: SettingsSnapshot) {
         settings = new
         apply(
@@ -204,7 +217,8 @@ final class DeviceTunnel {
                 phase: state.phase,
                 tunnelPort: state.tunnelPort,
                 heartbeatOn: state.heartbeatOn,
-                wroteDefaults: state.wroteDefaults
+                wroteDefaults: state.wroteDefaults,
+                bonjourPublished: state.bonjourPublished
             )
         )
     }
@@ -218,6 +232,10 @@ final class DeviceTunnel {
             hooks.stopHeartbeat()
             state.heartbeatOn = false
         }
+        if action.withdrawProxy {
+            hooks.withdraw()
+            enterManualMode(reason: "Bonjour withdrawn")
+        }
         if action.writeDefaults {
             hooks.writeDefaults(.settingEnabled)
             state.wroteDefaults = true
@@ -225,6 +243,9 @@ final class DeviceTunnel {
         if action.revertDefaults {
             hooks.revertDefaults(.settingDisabled)
             state.wroteDefaults = false
+        }
+        if action.republishProxy {
+            republishBonjour()
         }
     }
 
@@ -242,6 +263,7 @@ final class DeviceTunnel {
         state.bonjourName = nil
         state.heartbeatOn = false
         state.wroteDefaults = false
+        state.manualMode = false
         state.hello = nil
         if keepRowPhase != .failed && keepRowPhase != .receiverMissing {
             state.lastError = nil
@@ -278,35 +300,20 @@ final class DeviceTunnel {
         }
 
         state.phase = .publishing
-        let displayName = "\(state.model ?? "Android") (USB)"
-        let request = BonjourProxy.Request(
-            name: displayName,
-            hostname: SerialSanitizer.hostname(for: state.serial),
-            port: port,
-            txt: TXTRecordBuilder.make(
-                pv: hello.txtProtocolVersion,
-                id: SerialSanitizer.txtID(for: state.serial),
-                model: state.model
-            )
-        )
-        switch hooks.publish(request) {
-        case .success(let name):
-            state.bonjourName = name
-            state.phase = .ready
-            if port == HelperConstants.preferredTunnelPort {
-                if settings.sendHeartbeat {
-                    hooks.startHeartbeat(state.serial, port)
-                    state.heartbeatOn = true
-                }
-                if settings.writeOpenDisplayDefaults {
-                    hooks.writeDefaults(.tunnelReady)
-                    state.wroteDefaults = true
-                }
+        if shouldSkipBonjour(port: port) {
+            enterManualMode(reason: "Bonjour withheld")
+            becomeReady(port: port)
+        } else {
+            switch hooks.publish(makeBonjourRequest(port: port)) {
+            case .success(let name):
+                state.bonjourName = name
+                state.manualMode = false
+                becomeReady(port: port)
+            case .failure(let error):
+                fail("Bonjour: \(error.localizedDescription)")
+                hooks.removeForward(state.serial, port)
+                state.tunnelPort = nil
             }
-        case .failure(let error):
-            fail("Bonjour: \(error.localizedDescription)")
-            hooks.removeForward(state.serial, port)
-            state.tunnelPort = nil
         }
         if shouldAbort() {
             teardown(keepRowPhase: Self.phase(forAdbState: state.adbState))
@@ -341,6 +348,56 @@ final class DeviceTunnel {
         state.tunnelPort = nil
         state.bonjourName = nil
         state.heartbeatOn = false
+        state.manualMode = false
         state.hello = nil
+    }
+
+    private func shouldSkipBonjour(port: UInt16) -> Bool {
+        settings.writeOpenDisplayDefaults && port == HelperConstants.preferredTunnelPort
+    }
+
+    private func enterManualMode(reason: String) {
+        state.manualMode = true
+        state.bonjourName = Self.manualPublicationName
+        hooks.note("Manual mode — \(reason)")
+    }
+
+    private func becomeReady(port: UInt16) {
+        state.phase = .ready
+        if port == HelperConstants.preferredTunnelPort {
+            if settings.sendHeartbeat {
+                hooks.startHeartbeat(state.serial, port)
+                state.heartbeatOn = true
+            }
+            if settings.writeOpenDisplayDefaults {
+                hooks.writeDefaults(.tunnelReady)
+                state.wroteDefaults = true
+            }
+        }
+    }
+
+    private func makeBonjourRequest(port: UInt16) -> BonjourProxy.Request {
+        BonjourProxy.Request(
+            name: "\(state.model ?? "Android") (USB)",
+            hostname: SerialSanitizer.hostname(for: state.serial),
+            port: port,
+            txt: TXTRecordBuilder.make(
+                pv: state.hello?.txtProtocolVersion ?? HelperConstants.defaultProtocolVersion,
+                id: SerialSanitizer.txtID(for: state.serial),
+                model: state.model
+            )
+        )
+    }
+
+    private func republishBonjour() {
+        guard let port = state.tunnelPort else { return }
+        switch hooks.publish(makeBonjourRequest(port: port)) {
+        case .success(let name):
+            state.bonjourName = name
+            state.manualMode = false
+            hooks.note("left Manual mode — Bonjour published as \(name)")
+        case .failure(let error):
+            hooks.note("Bonjour republish failed: \(error.localizedDescription)")
+        }
     }
 }

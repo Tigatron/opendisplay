@@ -32,6 +32,7 @@ final class DeviceTunnelTests: XCTestCase {
         XCTAssertEqual(attached.model, "SM-X800")
         XCTAssertTrue(attached.heartbeatOn)
         XCTAssertFalse(attached.wroteDefaults)
+        XCTAssertFalse(attached.manualMode)
         XCTAssertEqual(log.events, [
             "check R52T30ABC",
             "launch R52T30ABC",
@@ -106,8 +107,13 @@ final class DeviceTunnelTests: XCTestCase {
             writeOpenDisplayDefaults: true
         )
         let tunnel = makeTunnel(log: log, port: 9000, settings: settings)
-        XCTAssertEqual(tunnel.attach().wroteDefaults, true)
+        let attached = tunnel.attach()
+        XCTAssertEqual(attached.wroteDefaults, true)
+        XCTAssertTrue(attached.manualMode)
+        XCTAssertEqual(attached.bonjourName, DeviceTunnel.manualPublicationName)
         XCTAssertTrue(log.events.contains("write defaults"))
+        XCTAssertTrue(log.events.contains("Manual mode — Bonjour withheld"))
+        XCTAssertFalse(log.events.contains(where: { $0.hasPrefix("publish ") }))
         _ = tunnel.detach()
         XCTAssertTrue(log.events.contains("revert defaults"))
     }
@@ -154,12 +160,23 @@ final class DeviceTunnelTests: XCTestCase {
         settings.writeOpenDisplayDefaults = true
         tunnel.applySettings(settings)
         XCTAssertTrue(tunnel.state.wroteDefaults)
+        XCTAssertTrue(tunnel.state.manualMode)
+        XCTAssertEqual(tunnel.state.bonjourName, DeviceTunnel.manualPublicationName)
         XCTAssertTrue(log.events.contains("write defaults"))
+        XCTAssertTrue(log.events.contains("withdraw"))
+        XCTAssertTrue(log.events.contains("Manual mode — Bonjour withdrawn"))
 
         settings.writeOpenDisplayDefaults = false
         tunnel.applySettings(settings)
         XCTAssertFalse(tunnel.state.wroteDefaults)
+        XCTAssertFalse(tunnel.state.manualMode)
+        XCTAssertEqual(tunnel.state.bonjourName, "SM-X800 (USB)")
         XCTAssertTrue(log.events.contains("revert defaults"))
+        XCTAssertTrue(log.events.contains("left Manual mode — Bonjour published as SM-X800 (USB)"))
+        // Production republish uses the blocking hooks.publish; HelperEngine
+        // must dispatch applySettings onto `io` (see applySettingsOnIO) or
+        // that wait deadlocks the engine queue. The mock here is synchronous.
+        XCTAssertEqual(log.events.filter { $0.hasPrefix("publish ") }.count, 2)
     }
 
     func testApplySettingsTogglesHeartbeatOnLive9000() {

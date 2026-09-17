@@ -20,40 +20,63 @@ final class SettingsReevaluationTests: XCTestCase {
         writeOpenDisplayDefaults: false
     )
 
-    func testEnablingAutoConnectOnReady9000WritesImmediately() {
+    func testEnablingAutoConnectOnReady9000WritesAndWithdraws() {
         let action = SettingsReevaluation.actions(
             settings: autoConnect,
             phase: .ready,
             tunnelPort: 9000,
             heartbeatOn: false,
-            wroteDefaults: false
+            wroteDefaults: false,
+            bonjourPublished: true
         )
         XCTAssertTrue(action.writeDefaults)
+        XCTAssertTrue(action.withdrawProxy)
         XCTAssertFalse(action.revertDefaults)
+        XCTAssertFalse(action.republishProxy)
         XCTAssertFalse(action.startHeartbeat)
     }
 
-    func testDisablingAutoConnectDeletesKeys() {
+    func testEnablingAutoConnectWhenAlreadyManualOnlyWritesIfNeeded() {
+        let action = SettingsReevaluation.actions(
+            settings: autoConnect,
+            phase: .ready,
+            tunnelPort: 9000,
+            heartbeatOn: false,
+            wroteDefaults: true,
+            bonjourPublished: false
+        )
+        XCTAssertFalse(action.writeDefaults)
+        XCTAssertFalse(action.withdrawProxy)
+        XCTAssertFalse(action.republishProxy)
+    }
+
+    func testDisablingAutoConnectDeletesKeysAndRepublishes() {
         let action = SettingsReevaluation.actions(
             settings: bothOff,
             phase: .ready,
             tunnelPort: 9000,
             heartbeatOn: false,
-            wroteDefaults: true
+            wroteDefaults: true,
+            bonjourPublished: false
         )
         XCTAssertTrue(action.revertDefaults)
+        XCTAssertTrue(action.republishProxy)
         XCTAssertFalse(action.writeDefaults)
+        XCTAssertFalse(action.withdrawProxy)
     }
 
-    func testFallbackPortDoesNotWriteDefaults() {
+    func testFallbackPortDoesNotWriteDefaultsOrWithdraw() {
         let action = SettingsReevaluation.actions(
             settings: autoConnect,
             phase: .ready,
             tunnelPort: 9010,
             heartbeatOn: false,
-            wroteDefaults: false
+            wroteDefaults: false,
+            bonjourPublished: true
         )
         XCTAssertFalse(action.writeDefaults)
+        XCTAssertFalse(action.withdrawProxy)
+        XCTAssertFalse(action.republishProxy)
     }
 
     func testNotReadyDoesNotWriteDefaults() {
@@ -62,9 +85,12 @@ final class SettingsReevaluationTests: XCTestCase {
             phase: .publishing,
             tunnelPort: 9000,
             heartbeatOn: false,
-            wroteDefaults: false
+            wroteDefaults: false,
+            bonjourPublished: false
         )
         XCTAssertFalse(action.writeDefaults)
+        XCTAssertFalse(action.withdrawProxy)
+        XCTAssertFalse(action.republishProxy)
     }
 
     func testEnablingHeartbeatOnReady9000Starts() {
@@ -73,10 +99,12 @@ final class SettingsReevaluationTests: XCTestCase {
             phase: .ready,
             tunnelPort: 9000,
             heartbeatOn: false,
-            wroteDefaults: false
+            wroteDefaults: false,
+            bonjourPublished: true
         )
         XCTAssertTrue(action.startHeartbeat)
         XCTAssertFalse(action.stopHeartbeat)
+        XCTAssertFalse(action.republishProxy)
     }
 
     func testDisablingHeartbeatStops() {
@@ -85,7 +113,8 @@ final class SettingsReevaluationTests: XCTestCase {
             phase: .ready,
             tunnelPort: 9000,
             heartbeatOn: true,
-            wroteDefaults: false
+            wroteDefaults: false,
+            bonjourPublished: true
         )
         XCTAssertTrue(action.stopHeartbeat)
         XCTAssertFalse(action.startHeartbeat)
@@ -97,11 +126,14 @@ final class SettingsReevaluationTests: XCTestCase {
             phase: .ready,
             tunnelPort: 9000,
             heartbeatOn: true,
-            wroteDefaults: false
+            wroteDefaults: false,
+            bonjourPublished: true
         )
         XCTAssertFalse(action.startHeartbeat)
         XCTAssertFalse(action.stopHeartbeat)
         XCTAssertFalse(action.writeDefaults)
         XCTAssertFalse(action.revertDefaults)
+        XCTAssertFalse(action.withdrawProxy)
+        XCTAssertFalse(action.republishProxy)
     }
 }

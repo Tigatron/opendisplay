@@ -97,11 +97,36 @@ final class HelperEngine: @unchecked Sendable {
                 self.log.info("adb override changed — restarting tracker")
                 self.reloadAdbAndTrack()
             }
+            // DeviceTunnel.applySettings must run on `io`, not `queue`.
+            // hooks.publish (used by republishBonjour when leaving Manual
+            // mode) blocks the caller on a semaphore while the dns_sd
+            // registration is `queue.async`'d — the same contract as attach().
+            // Applying on `queue` deadlocks until the 3s timeout and the
+            // republish always fails. Heartbeat / withdraw hooks already hop
+            // onto `queue` themselves. reconcileOpenDisplayDefaults here may
+            // run before the async apply; the 10s timer retries it.
             for slot in self.slots.values {
-                slot.tunnel?.applySettings(snapshot)
+                self.applySettingsOnIO(slot, snapshot)
             }
             self.reconcileOpenDisplayDefaults()
             self.publish()
+        }
+    }
+
+    private func applySettingsOnIO(_ slot: DeviceSlot, _ snapshot: SettingsSnapshot) {
+        guard let tunnel = slot.tunnel else { return }
+        let generation = slot.generation
+        io.async { [weak self, weak slot] in
+            guard let self, let slot else { return }
+            let stillCurrent = self.queue.sync {
+                self.started && slot.generation == generation && slot.tunnel === tunnel
+            }
+            guard stillCurrent else { return }
+            tunnel.applySettings(snapshot)
+            self.queue.async {
+                guard slot.generation == generation, self.started else { return }
+                self.publish()
+            }
         }
     }
 
@@ -368,6 +393,15 @@ final class HelperEngine: @unchecked Sendable {
             let box = ResultBox<String>()
             let done = DispatchSemaphore(value: 0)
             self.queue.async {
+                guard slot.generation == generation else {
+                    box.value = .failure(NSError(
+                        domain: "Bonjour",
+                        code: -4,
+                        userInfo: [NSLocalizedDescriptionKey: "slot generation changed"]
+                    ))
+                    done.signal()
+                    return
+                }
                 let proxy = BonjourProxy(queue: self.queue)
                 slot.proxy = proxy
                 proxy.publish(
@@ -590,6 +624,7 @@ final class HelperEngine: @unchecked Sendable {
                     heartbeatOn: false,
                     lastError: device.isAuthorizedReady ? nil : nil,
                     wroteDefaults: false,
+                    manualMode: false,
                     hello: nil
                 )
             }

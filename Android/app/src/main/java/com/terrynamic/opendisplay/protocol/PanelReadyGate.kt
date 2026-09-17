@@ -44,7 +44,8 @@ class PanelReadyGate {
             listeningEnabled: Boolean,
             panelReady: Boolean,
             alreadyBound: Boolean,
-        ): Boolean = listeningEnabled && panelReady && !alreadyBound
+            asleep: Boolean = false,
+        ): Boolean = listeningEnabled && panelReady && !alreadyBound && !asleep
 
         fun awaitReady(
             isReady: () -> Boolean,

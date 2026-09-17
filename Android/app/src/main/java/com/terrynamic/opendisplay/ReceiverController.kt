@@ -4,6 +4,7 @@ import android.app.Application
 import android.graphics.BitmapFactory
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
@@ -21,6 +22,7 @@ import com.terrynamic.opendisplay.protocol.StatsSnapshot
 import com.terrynamic.opendisplay.protocol.WireMessage
 import com.terrynamic.opendisplay.protocol.WireProtocol
 import com.terrynamic.opendisplay.transport.TransportBuffering
+import com.terrynamic.opendisplay.session.SessionLifecycle
 import com.terrynamic.opendisplay.service.NsdAdvertiser
 import com.terrynamic.opendisplay.transport.Demux
 import com.terrynamic.opendisplay.transport.FrameKind
@@ -39,11 +41,16 @@ import kotlinx.coroutines.flow.update
 import org.json.JSONObject
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.roundToInt
 
-class ReceiverController(private val app: Application) {
+class ReceiverController(
+    private val app: Application,
+    private val wakeProbe: DeviceWakeProbe = DeviceWakeProbe.system(app),
+) {
     private val store = SettingsStore(app)
     private val installId = InstallId.get(app)
     private val controlThread = HandlerThread("od-control").apply { start() }
@@ -82,7 +89,9 @@ class ReceiverController(private val app: Application) {
     )
 
     private var listener: ReceiverListener? = null
-    private var sessionGeneration = 0L
+    private val session = SessionLifecycle { it() }
+    @Volatile
+    private var lastSurface: Surface? = null
     private val cursorChannel = CursorChannel()
     private var cursorUdp: CursorUdpSocket? = null
     private var lastAdvertisedAddrs: List<String> = emptyList()
@@ -119,28 +128,50 @@ class ReceiverController(private val app: Application) {
 
     private val livenessTick = object : Runnable {
         override fun run() {
-            if (!listeningEnabled || asleep) return
-            val now = SystemClock.elapsedRealtime()
-            if (listener?.liveConnection != null) {
-                if (now - lastPingAt >= WireProtocol.PING_INTERVAL_MS) {
-                    lastPingAt = now
-                    listener?.sendControl(
-                        OutboundKind.PING,
-                        ControlMessages.ping(System.currentTimeMillis().toDouble()),
-                    )
+            try {
+                val decision = LivenessTickPolicy.decide(
+                    listeningEnabled = listeningEnabled,
+                    asleep = asleep,
+                    stopped = stopped,
+                    deviceUnlocked = wakeProbe.snapshot().unlocked,
+                )
+                if (decision.resume) {
+                    applyResumeLocked(reason = "device-state", repostTick = false)
                 }
-                if (now - lastStatsAt >= WireProtocol.STATS_INTERVAL_MS) {
-                    lastStatsAt = now
-                    sendStats()
+                if (decision.send) {
+                    runLivenessSends()
                 }
-                val link = linkPolicy.snapshot()
-                if (link.addrs != lastAdvertisedAddrs) {
-                    lastAdvertisedAddrs = link.addrs
-                    sendHello()
-                    _state.update { it.copy(usbHelperActive = link.helperActive) }
+                if (decision.reschedule) {
+                    handler.postDelayed(this, LivenessTickPolicy.INTERVAL_MS)
+                }
+            } catch (thrown: Throwable) {
+                Log.w(WireProtocol.LOG_TAG, "liveness tick failed: ${thrown.message}")
+                if (!stopped) {
+                    handler.postDelayed(this, LivenessTickPolicy.INTERVAL_MS)
                 }
             }
-            handler.postDelayed(this, 500)
+        }
+    }
+
+    private fun runLivenessSends() {
+        val now = SystemClock.elapsedRealtime()
+        if (listener?.liveConnection == null) return
+        if (now - lastPingAt >= WireProtocol.PING_INTERVAL_MS) {
+            lastPingAt = now
+            listener?.sendControl(
+                OutboundKind.PING,
+                ControlMessages.ping(System.currentTimeMillis().toDouble()),
+            )
+        }
+        if (now - lastStatsAt >= WireProtocol.STATS_INTERVAL_MS) {
+            lastStatsAt = now
+            sendStats()
+        }
+        val link = linkPolicy.snapshot()
+        if (link.addrs != lastAdvertisedAddrs) {
+            lastAdvertisedAddrs = link.addrs
+            sendHello()
+            _state.update { it.copy(usbHelperActive = link.helperActive) }
         }
     }
 
@@ -157,6 +188,7 @@ class ReceiverController(private val app: Application) {
     fun sleepSession() {
         handler.post {
             asleep = true
+            Log.i(WireProtocol.LOG_TAG, "sleep session — liveness sends paused")
             listener?.sendControl(OutboundKind.SLEEPING, ControlMessages.sleeping())
             stopListenerLocked(sendClosing = false)
             _state.update { it.copy(status = "Sleeping — waiting for unlock", phase = ReceiverPhase.IDLE) }
@@ -164,15 +196,26 @@ class ReceiverController(private val app: Application) {
     }
 
     fun resumeFromSleep() {
-        handler.post {
-            asleep = false
-            if (listeningEnabled) maybeStartListenerLocked()
-            _state.update {
-                it.copy(
-                    status = if (panel.isReady) "Listening on :${WireProtocol.DEFAULT_PORT}"
-                    else "Waiting for panel size",
-                )
-            }
+        handler.post { applyResumeLocked(reason = "event", repostTick = true) }
+    }
+
+    private fun applyResumeLocked(reason: String, repostTick: Boolean) {
+        if (stopped) return
+        val wasAsleep = asleep
+        asleep = false
+        if (listeningEnabled) maybeStartListenerLocked()
+        if (repostTick) {
+            handler.removeCallbacks(livenessTick)
+            handler.post(livenessTick)
+        }
+        if (wasAsleep) {
+            Log.i(WireProtocol.LOG_TAG, "resume from sleep ($reason)")
+        }
+        _state.update {
+            it.copy(
+                status = if (panel.isReady) "Listening on :${WireProtocol.DEFAULT_PORT}"
+                else "Waiting for panel size",
+            )
         }
     }
 
@@ -205,6 +248,7 @@ class ReceiverController(private val app: Application) {
     }
 
     fun attachSurface(surface: Surface?) {
+        lastSurface = surface
         decoder.attachSurface(surface)
         if (surface != null) handler.post { requestKeyframe(null) }
     }
@@ -345,7 +389,7 @@ class ReceiverController(private val app: Application) {
     }
 
     private fun maybeStartListenerLocked() {
-        if (!PanelReadyGate.shouldBindListener(listeningEnabled, panel.isReady, listener != null)) {
+        if (!PanelReadyGate.shouldBindListener(listeningEnabled, panel.isReady, listener != null, asleep)) {
             return
         }
         startListenerLocked()
@@ -362,7 +406,10 @@ class ReceiverController(private val app: Application) {
                     initialBytes: ByteArray,
                     transport: String,
                 ): (ByteArray) -> Unit {
-                    adoptSession(connection, generation, transport)
+                    // Same handler as handleClosed so stale closes cannot
+                    // reset a newer session. Block until adopt finishes so
+                    // the reader never sees frames before decoder.reset().
+                    runOnControlThread { adoptSession(connection, generation, transport) }
                     return { payload ->
                         bytesThisWindow.addAndGet(payload.size.toLong())
                         handleFrame(payload)
@@ -404,7 +451,7 @@ class ReceiverController(private val app: Application) {
         kfThrottle.invalidateAll()
         stopCursorUdp()
         resetCursor()
-        sessionGeneration = 0
+        session.clearGeneration()
         _state.update {
             it.copy(
                 phase = if (it.updateMessage != null) ReceiverPhase.BLOCKED else ReceiverPhase.IDLE,
@@ -417,7 +464,8 @@ class ReceiverController(private val app: Application) {
     }
 
     private fun adoptSession(connection: FramedConnection, generation: Long, transport: String) {
-        sessionGeneration = generation
+        session.retainSurface(lastSurface)
+        session.adopt(generation, transport)
         senderPv = WireProtocol.ASSUMED_WHEN_ABSENT
         cursorChannel.resetSession()
         clock.reset()
@@ -426,6 +474,7 @@ class ReceiverController(private val app: Application) {
         unknownTypes.clear()
         decoder.reset()
         decoder.setQueueDepth(TransportBuffering.queueFrames(transport))
+        decoder.attachSurface(lastSurface)
         resetCursor()
         lastPingAt = 0
         lastStatsAt = SystemClock.elapsedRealtime()
@@ -447,7 +496,7 @@ class ReceiverController(private val app: Application) {
     }
 
     private fun handleClosed(generation: Long) {
-        if (generation != sessionGeneration && sessionGeneration != 0L) return
+        if (!session.close(generation)) return
         decoder.reset()
         clock.reset()
         resetCursor()
@@ -461,6 +510,36 @@ class ReceiverController(private val app: Application) {
                 statsText = null,
             )
         }
+    }
+
+    private fun runOnControlThread(block: () -> Unit) {
+        if (Looper.myLooper() == controlThread.looper) {
+            block()
+            return
+        }
+        val done = CountDownLatch(1)
+        var error: Throwable? = null
+        val posted = handler.post {
+            try {
+                block()
+            } catch (thrown: Throwable) {
+                error = thrown
+            } finally {
+                done.countDown()
+            }
+        }
+        if (!posted) {
+            Log.w(WireProtocol.LOG_TAG, "control thread gone — session transition dropped")
+            return
+        }
+        try {
+            if (!done.await(5, TimeUnit.SECONDS)) {
+                Log.w(WireProtocol.LOG_TAG, "session transition timed out")
+            }
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        error?.let { throw it }
     }
 
     private fun handleFrame(payload: ByteArray) {
@@ -531,7 +610,7 @@ class ReceiverController(private val app: Application) {
     }
 
     private fun requestKeyframe(reason: String?) {
-        val generation = sessionGeneration
+        val generation = session.generation
         if (generation == 0L) return
         when (val action = kfThrottle.request(generation, SystemClock.elapsedRealtime())) {
             KeyframeRequestAction.SendNow -> {
@@ -579,7 +658,10 @@ class ReceiverController(private val app: Application) {
         val mbps = (bytes * 8.0) / elapsed / 1_000_000.0
         val offsetKnown = clock.offsetMs != null
         val latencySnap = latency.snapshot(offsetKnown)
-        val transport = _state.value.transport ?: "wifi"
+        val transport = listener?.liveConnection?.transport
+            ?: session.transport
+            ?: _state.value.transport
+            ?: lastOverlay.transport
         val health = senderHealth
         val state = _state.value
         lastOverlay = StatsSnapshot(

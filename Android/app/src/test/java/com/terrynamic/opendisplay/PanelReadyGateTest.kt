@@ -38,6 +38,26 @@ class PanelReadyGateTest {
     }
 
     @Test
+    fun shouldBindListener_refusesWhileAsleep_andAllowsAfterWake() {
+        assertFalse(
+            PanelReadyGate.shouldBindListener(
+                listeningEnabled = true,
+                panelReady = true,
+                alreadyBound = false,
+                asleep = true,
+            ),
+        )
+        assertTrue(
+            PanelReadyGate.shouldBindListener(
+                listeningEnabled = true,
+                panelReady = true,
+                alreadyBound = false,
+                asleep = false,
+            ),
+        )
+    }
+
+    @Test
     fun awaitReady_returnsTrueWhenReadyBeforeDeadline() {
         var now = 0L
         var ready = false
